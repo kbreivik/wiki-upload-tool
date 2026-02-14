@@ -230,6 +230,27 @@ class WikiClient:
         """
         return self.graphql_request(query, {"id": page_id})
 
+    def fetch_tags(self) -> list[str]:
+        """Fetch all tags from Wiki.js, sorted alphabetically.
+
+        Returns:
+            List of tag strings.
+        """
+        query = """
+        {
+          tags {
+            list {
+              tag
+            }
+          }
+        }
+        """
+        result = self.graphql_request(query)
+        tags_data = result.get("data", {}).get("tags", {}).get("list")
+        if not tags_data:
+            return []
+        return sorted(t["tag"] for t in tags_data)
+
     def fetch_page_list(self) -> list[dict]:
         """Fetch all pages as a flat list."""
         query = """
