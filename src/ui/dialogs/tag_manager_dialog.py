@@ -129,7 +129,7 @@ class _PageTagModel(QAbstractTableModel):
     def flags(self, index: QModelIndex) -> Qt.ItemFlag:
         base = super().flags(index)
         if index.column() == 0:
-            return base | Qt.ItemFlag.ItemIsUserCheckable
+            return base | Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEditable
         return base
 
     def get_checked_pages(self) -> list[dict]:
