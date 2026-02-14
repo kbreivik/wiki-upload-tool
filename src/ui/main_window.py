@@ -7,6 +7,7 @@ from PySide6.QtCore import QSettings, Qt
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QDialog,
     QFileDialog,
     QFormLayout,
     QGroupBox,
@@ -27,6 +28,7 @@ from src.core.discovery import discover_files, generate_slug, parse_frontmatter
 from src.core.links import build_link_map
 from src.core.upload import UploadResult, process_file
 from src.core.wiki_client import WikiClient, WikiClientError
+from src.ui.dialogs.dry_run_preview import DryRunPreviewDialog
 from src.ui.widgets.connection_indicator import ConnectionIndicator
 from src.ui.widgets.file_table import FileTableView
 from src.ui.widgets.log_viewer import LogHandler, LogViewer
@@ -356,11 +358,19 @@ class MainWindow(QMainWindow):
             logger.warning("No files selected")
             return
 
-        logger.info("=== DRY RUN — No changes will be made ===")
-        for f in checked:
-            status = "SKIP (error)" if f.get("status") == "ERROR" else "Would upload"
-            logger.info("  %s → %s [%s]", f["filename"], f["path"], status)
-        logger.info("Total: %d file(s)", len(checked))
+        # Create client for existence checks if credentials are available
+        client = None
+        if config.wiki_url and config.api_key:
+            client = WikiClient(config.wiki_url, config.api_key)
+
+        dialog = DryRunPreviewDialog(
+            files=checked,
+            base_path=config.base_path,
+            client=client,
+            parent=self,
+        )
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self._on_upload()
 
     def _on_upload(self) -> None:
         config = self._build_config()
