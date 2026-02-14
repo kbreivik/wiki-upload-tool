@@ -29,6 +29,7 @@ from src.core.links import build_link_map
 from src.core.upload import UploadResult, process_file
 from src.core.wiki_client import WikiClient, WikiClientError
 from src.ui.dialogs.dry_run_preview import DryRunPreviewDialog
+from src.ui.dialogs.settings_dialog import SettingsDialog
 from src.ui.widgets.connection_indicator import ConnectionIndicator
 from src.ui.widgets.file_table import FileTableView
 from src.ui.widgets.log_viewer import LogHandler, LogViewer
@@ -47,6 +48,7 @@ class MainWindow(QMainWindow):
         self._upload_worker: UploadWorker | None = None
         self._test_worker: TestConnectionWorker | None = None
         self._settings = QSettings("wiki-upload-tool", "wiki-upload-tool")
+        self._strip_patterns: list[str] = []
 
         self._build_ui()
         self._setup_logging()
@@ -191,6 +193,11 @@ class MainWindow(QMainWindow):
         row.addWidget(self._cancel_btn)
 
         row.addStretch()
+
+        self._settings_btn = QPushButton("Settings...")
+        self._settings_btn.clicked.connect(self._on_settings)
+        row.addWidget(self._settings_btn)
+
         return row
 
     # ── Logging ────────────────────────────────────────────────
@@ -219,6 +226,7 @@ class MainWindow(QMainWindow):
         else:
             self._locale.setEditText(locale)
         self._index_file.setText(self._settings.value("index_file", "README.md"))
+        self._strip_patterns = self._settings.value("strip_patterns", []) or []
 
         # Refresh file table if source dir was restored
         if self._source_dir.text():
@@ -232,6 +240,7 @@ class MainWindow(QMainWindow):
         self._settings.setValue("base_path", self._base_path.text())
         self._settings.setValue("locale", self._locale.currentText())
         self._settings.setValue("index_file", self._index_file.text())
+        self._settings.setValue("strip_patterns", self._strip_patterns)
 
     def closeEvent(self, event: object) -> None:
         self._save_settings()
@@ -248,6 +257,7 @@ class MainWindow(QMainWindow):
             locale=self._locale.currentText().strip(),
             index_file=self._index_file.text().strip() or "README.md",
             tags=self._tag_editor.get_tags(),
+            strip_footer_patterns=list(self._strip_patterns),
             update_existing=self._update_existing.isChecked(),
             dry_run=dry_run,
         )
@@ -350,6 +360,43 @@ class MainWindow(QMainWindow):
             self._connection_indicator.set_disconnected("Connection failed")
             self._api_key.setStyleSheet("")
             logger.error("Connection failed: %s", message)
+
+    def _on_settings(self) -> None:
+        current_env = {
+            "WIKIJS_URL": self._wiki_url.text().strip(),
+            "WIKIJS_API_KEY": self._api_key.text().strip(),
+            "WIKIJS_BASE_PATH": self._base_path.text().strip(),
+            "WIKIJS_SOURCE_DIR": self._source_dir.text().strip(),
+            "WIKIJS_LOCALE": self._locale.currentText().strip(),
+        }
+        dialog = SettingsDialog(
+            strip_patterns=self._strip_patterns,
+            current_env=current_env,
+            parent=self,
+        )
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self._strip_patterns = dialog.get_strip_patterns()
+
+            # Apply imported .env values to main window fields
+            imported = dialog.get_imported_env()
+            if imported:
+                if "WIKIJS_URL" in imported:
+                    self._wiki_url.setText(imported["WIKIJS_URL"])
+                if "WIKIJS_API_KEY" in imported:
+                    self._api_key.setText(imported["WIKIJS_API_KEY"])
+                if "WIKIJS_BASE_PATH" in imported:
+                    self._base_path.setText(imported["WIKIJS_BASE_PATH"])
+                if "WIKIJS_SOURCE_DIR" in imported:
+                    self._source_dir.setText(imported["WIKIJS_SOURCE_DIR"])
+                if "WIKIJS_LOCALE" in imported:
+                    locale = imported["WIKIJS_LOCALE"]
+                    idx = self._locale.findText(locale)
+                    if idx >= 0:
+                        self._locale.setCurrentIndex(idx)
+                    else:
+                        self._locale.setEditText(locale)
+                self._refresh_file_list()
+                logger.info("Applied imported .env settings")
 
     def _on_dry_run(self) -> None:
         config = self._build_config(dry_run=True)
