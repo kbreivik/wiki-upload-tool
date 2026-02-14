@@ -74,6 +74,7 @@ class MainWindow(QMainWindow):
         config_layout.setContentsMargins(0, 0, 0, 0)
         config_layout.addWidget(self._build_connection_group())
         config_layout.addWidget(self._build_source_group())
+        config_layout.addWidget(self._build_destination_group())
         config_layout.addWidget(self._build_options_group())
 
         # File table
@@ -142,6 +143,14 @@ class MainWindow(QMainWindow):
         folder_row.addWidget(self._browse_btn)
         layout.addRow("Folder:", folder_row)
 
+        self._source_dir.editingFinished.connect(self._refresh_file_list)
+
+        return group
+
+    def _build_destination_group(self) -> QGroupBox:
+        group = QGroupBox("Destination")
+        layout = QFormLayout(group)
+
         # Base path
         base_row = QHBoxLayout()
         self._base_path = QLineEdit()
@@ -154,23 +163,16 @@ class MainWindow(QMainWindow):
         base_row.addWidget(self._pick_path_btn)
         layout.addRow("Base Path:", base_row)
 
-        # Locale + index file
-        locale_row = QHBoxLayout()
+        # Locale
         self._locale = QComboBox()
         self._locale.setEditable(True)
         self._locale.addItems(["en", "nb", "de", "fr", "es"])
-        locale_row.addWidget(QLabel("Locale:"))
-        locale_row.addWidget(self._locale)
-        locale_row.addSpacing(20)
-        locale_row.addWidget(QLabel("Index file:"))
-        self._index_file = QLineEdit("README.md")
-        self._index_file.setFixedWidth(120)
-        locale_row.addWidget(self._index_file)
-        locale_row.addStretch()
-        layout.addRow(locale_row)
+        layout.addRow("Locale:", self._locale)
 
-        # Refresh file list when source dir changes
-        self._source_dir.editingFinished.connect(self._refresh_file_list)
+        # Index file
+        self._index_file = QLineEdit("README.md")
+        layout.addRow("Index file:", self._index_file)
+
         self._base_path.editingFinished.connect(self._refresh_file_list)
         self._locale.currentTextChanged.connect(self._refresh_file_list)
         self._index_file.editingFinished.connect(self._refresh_file_list)
