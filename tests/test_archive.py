@@ -69,6 +69,23 @@ class TestComputeArchivePath:
         result = compute_archive_path("A/B/C/D", "A/B", "archive/A/B")
         assert result == "archive/A/B/C/D"
 
+    def test_preserves_full_folder_hierarchy(self):
+        """Verify the user's exact scenario: nested Docker pages."""
+        base = "Dokumentasjon/Docker"
+        dest = "Dokumentasjon/Arkiv/Docker"
+        assert (
+            compute_archive_path("Dokumentasjon/Docker/Dockge", base, dest)
+            == "Dokumentasjon/Arkiv/Docker/Dockge"
+        )
+        assert (
+            compute_archive_path("Dokumentasjon/Docker/Oppsett/N8N", base, dest)
+            == "Dokumentasjon/Arkiv/Docker/Oppsett/N8N"
+        )
+        assert (
+            compute_archive_path("Dokumentasjon/Docker/Oppsett/Dozzle", base, dest)
+            == "Dokumentasjon/Arkiv/Docker/Oppsett/Dozzle"
+        )
+
 
 # ── _archive_single_page ───────────────────────────────────────────
 

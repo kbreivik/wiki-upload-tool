@@ -282,12 +282,14 @@ class WikiPathPickerDialog(QDialog):
             self._path_field.setText(path)
 
     def _on_new_folder(self) -> None:
+        current = self._path_field.text().strip()
+        default = f"{current}/" if current else ""
         text, ok = QInputDialog.getText(
             self,
             "New Folder",
             "Enter wiki path (e.g. Documentation/Archive):",
             QLineEdit.EchoMode.Normal,
-            self._path_field.text(),
+            default,
         )
         if ok and text.strip():
             self._path_field.setText(text.strip())

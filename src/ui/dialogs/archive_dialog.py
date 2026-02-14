@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from src.core.upload import ArchiveResult, find_pages_to_archive
+from src.core.upload import ArchiveResult, compute_archive_path, find_pages_to_archive
 from src.core.wiki_client import WikiClient, WikiClientError
 from src.ui.widgets.wiki_path_picker import WikiPathPickerDialog
 from src.ui.workers import ArchiveWorker
@@ -221,15 +221,7 @@ class ArchiveDialog(QDialog):
             self._summary_label.setText("Nothing to archive.")
             return
 
-        archive_dest = self._dest_input.text().strip()
-        rows = []
-        for p in self._pages_to_archive:
-            old_path = p["path"]
-            relative = old_path[len(self._base_path) :].lstrip("/")
-            new_path = f"{archive_dest}/{relative}" if relative else archive_dest
-            rows.append((old_path, new_path, ""))
-
-        self._model.set_rows(rows)
+        self._refresh_preview()
         self._status_label.setText(
             f"Found {len(self._pages_to_archive)} page(s) to archive"
         )
@@ -237,6 +229,9 @@ class ArchiveDialog(QDialog):
             f"{len(self._pages_to_archive)} page(s) will be moved"
         )
         self._archive_btn.setEnabled(True)
+
+        # Live-update preview when user edits destination
+        self._dest_input.textChanged.connect(self._refresh_preview)
 
     def _on_fetch_error(self, message: str) -> None:
         self._status_label.setText(f"Error: {message}")
@@ -262,8 +257,7 @@ class ArchiveDialog(QDialog):
         rows = []
         for p in self._pages_to_archive:
             old_path = p["path"]
-            relative = old_path[len(self._base_path) :].lstrip("/")
-            new_path = f"{archive_dest}/{relative}" if relative else archive_dest
+            new_path = compute_archive_path(old_path, self._base_path, archive_dest)
             rows.append((old_path, new_path, ""))
         self._model.set_rows(rows)
 
