@@ -1,7 +1,9 @@
 @echo off
-REM Build standalone exe with Nuitka (run from project root, inside venv)
+REM Build standalone exe with Nuitka (run from project root)
 REM Requires: MSVC (Visual Studio Build Tools), Nuitka, PySide6
 REM Install: uv pip install nuitka
+
+call %~dp0..\.venv\Scripts\activate.bat
 
 python -m nuitka ^
     --standalone ^
