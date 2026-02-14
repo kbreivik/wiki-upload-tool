@@ -31,6 +31,7 @@ from src.core.wiki_client import WikiClient, WikiClientError
 from src.ui.dialogs.dry_run_preview import DryRunPreviewDialog
 from src.ui.dialogs.settings_dialog import SettingsDialog
 from src.ui.widgets.connection_indicator import ConnectionIndicator
+from src.ui.widgets.wiki_path_picker import WikiPathPickerDialog
 from src.ui.widgets.file_table import FileTableView
 from src.ui.widgets.log_viewer import LogHandler, LogViewer
 from src.ui.widgets.tag_editor import TagEditor
@@ -136,9 +137,16 @@ class MainWindow(QMainWindow):
         layout.addRow("Folder:", folder_row)
 
         # Base path
+        base_row = QHBoxLayout()
         self._base_path = QLineEdit()
         self._base_path.setPlaceholderText("Documentation/MyProject")
-        layout.addRow("Base Path:", self._base_path)
+        self._pick_path_btn = QPushButton("Pick...")
+        self._pick_path_btn.setFixedWidth(60)
+        self._pick_path_btn.setEnabled(False)
+        self._pick_path_btn.clicked.connect(self._on_pick_path)
+        base_row.addWidget(self._base_path)
+        base_row.addWidget(self._pick_path_btn)
+        layout.addRow("Base Path:", base_row)
 
         # Locale + index file
         locale_row = QHBoxLayout()
@@ -342,12 +350,14 @@ class MainWindow(QMainWindow):
     def _on_test_success(self) -> None:
         self._connection_indicator.set_connected()
         self._test_btn.setEnabled(True)
+        self._pick_path_btn.setEnabled(True)
         logger.info("Connection test passed")
         # Clear any error styling on API key field
         self._api_key.setStyleSheet("")
 
     def _on_test_failure(self, message: str) -> None:
         self._test_btn.setEnabled(True)
+        self._pick_path_btn.setEnabled(False)
 
         if "401" in message or "403" in message:
             self._connection_indicator.set_disconnected("Auth failed")
@@ -360,6 +370,24 @@ class MainWindow(QMainWindow):
             self._connection_indicator.set_disconnected("Connection failed")
             self._api_key.setStyleSheet("")
             logger.error("Connection failed: %s", message)
+
+    def _on_pick_path(self) -> None:
+        url = self._wiki_url.text().strip().rstrip("/")
+        key = self._api_key.text().strip()
+        if not url or not key:
+            return
+
+        client = WikiClient(url, key)
+        dialog = WikiPathPickerDialog(
+            client=client,
+            current_path=self._base_path.text().strip(),
+            parent=self,
+        )
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            path = dialog.selected_path()
+            if path:
+                self._base_path.setText(path)
+                self._refresh_file_list()
 
     def _on_settings(self) -> None:
         current_env = {
