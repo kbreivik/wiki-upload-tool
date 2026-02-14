@@ -11,9 +11,9 @@ from src.core.upload import (
     ArchivePageResult,
     ArchiveResult,
     UploadResult,
-    _archive_single_page,
+    _move_single_page,
     _upload_single_page,
-    compute_archive_path,
+    compute_dest_path,
 )
 from src.core.wiki_client import WikiClient, WikiClientError
 
@@ -113,35 +113,40 @@ class TestConnectionWorker(QThread):
             self.failure.emit(traceback.format_exc())
 
 
-class ArchiveWorker(QThread):
-    """Background thread for archiving wiki pages.
+class _PageMoveWorkerBase(QThread):
+    """Base worker for archive and move operations.
+
+    Subclasses set ``_include_folder_name`` and the worker label.
 
     Signals:
         progress(int, int, str): (current_index, total, old_path)
         page_done(str, str, str, str): (old_path, new_path, status, message)
-        finished_archive(ArchiveResult): emitted when archive completes
+        finished_result(ArchiveResult): emitted when operation completes
         error(str): emitted on unexpected exception
     """
 
     progress = Signal(int, int, str)
     page_done = Signal(str, str, str, str)
-    finished_archive = Signal(ArchiveResult)
+    finished_result = Signal(ArchiveResult)
     error = Signal(str)
+
+    _include_folder_name: bool = True
+    _label: str = "operation"
 
     def __init__(
         self,
         client: WikiClient,
         pages: list[dict],
-        base_path: str,
-        archive_path: str,
+        source_path: str,
+        dest_root: str,
         locale: str,
         parent: object = None,
     ) -> None:
         super().__init__(parent)
         self._client = client
         self._pages = pages
-        self._base_path = base_path
-        self._archive_path = archive_path
+        self._source_path = source_path
+        self._dest_root = dest_root
         self._locale = locale
         self._cancel_event = threading.Event()
 
@@ -156,15 +161,21 @@ class ArchiveWorker(QThread):
 
             for i, page in enumerate(self._pages):
                 if self._cancel_event.is_set():
-                    logger.info("Archive cancelled at page %d/%d", i, total)
+                    logger.info(
+                        "%s cancelled at page %d/%d",
+                        self._label.capitalize(), i, total,
+                    )
                     break
 
                 self.progress.emit(i, total, page.get("path", ""))
 
-                new_path = compute_archive_path(
-                    page["path"], self._base_path, self._archive_path
+                new_path = compute_dest_path(
+                    page["path"],
+                    self._source_path,
+                    self._dest_root,
+                    self._include_folder_name,
                 )
-                page_result = _archive_single_page(
+                page_result = _move_single_page(
                     self._client, page, new_path, self._locale
                 )
                 result.pages.append(page_result)
@@ -181,8 +192,36 @@ class ArchiveWorker(QThread):
                     page_result.message,
                 )
 
-            self.finished_archive.emit(result)
+            self.finished_result.emit(result)
         except Exception:
             tb = traceback.format_exc()
-            logger.critical("Unexpected error in archive worker:\n%s", tb)
+            logger.critical(
+                "Unexpected error in %s worker:\n%s", self._label, tb
+            )
             self.error.emit(tb)
+
+
+class ArchiveWorker(_PageMoveWorkerBase):
+    """Background thread for archiving wiki pages (always includes folder name)."""
+
+    _include_folder_name = True
+    _label = "archive"
+
+
+class MoveWorker(_PageMoveWorkerBase):
+    """Background thread for moving wiki pages."""
+
+    _label = "move"
+
+    def __init__(
+        self,
+        client: WikiClient,
+        pages: list[dict],
+        source_path: str,
+        dest_root: str,
+        locale: str,
+        include_folder_name: bool = True,
+        parent: object = None,
+    ) -> None:
+        super().__init__(client, pages, source_path, dest_root, locale, parent)
+        self._include_folder_name = include_folder_name

@@ -5,6 +5,7 @@ import logging
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, QThread, Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
+    QCheckBox,
     QDialog,
     QDialogButtonBox,
     QHBoxLayout,
@@ -21,7 +22,7 @@ from PySide6.QtWidgets import (
 from src.core.upload import ArchiveResult, compute_dest_path, find_pages_to_archive
 from src.core.wiki_client import WikiClient, WikiClientError
 from src.ui.widgets.wiki_path_picker import WikiPathPickerDialog
-from src.ui.workers import ArchiveWorker
+from src.ui.workers import MoveWorker
 
 logger = logging.getLogger(__name__)
 
@@ -104,15 +105,15 @@ class _PreviewModel(QAbstractTableModel):
 # ── Dialog ──────────────────────────────────────────────────────────
 
 
-class ArchiveDialog(QDialog):
-    """Dialog for archiving existing wiki pages.
+class MoveDialog(QDialog):
+    """Dialog for moving wiki pages from one path to another.
 
-    User picks a source folder and an archive root.  The tool appends
-    the source folder name to the archive root automatically.
+    User picks source and destination freely.  A checkbox controls
+    whether the source folder name is included in the destination.
 
     Args:
         client: WikiClient instance.
-        source_path: Pre-filled source folder to archive from.
+        source_path: Pre-filled source folder.
         locale: Wiki locale.
         parent: Parent widget.
     """
@@ -125,7 +126,7 @@ class ArchiveDialog(QDialog):
         parent: object = None,
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Archive Pages")
+        self.setWindowTitle("Move Pages")
         self.setMinimumSize(650, 450)
         self.resize(750, 500)
 
@@ -134,7 +135,7 @@ class ArchiveDialog(QDialog):
         self._locale = locale
         self._pages: list[dict] = []
         self._fetch_worker: _FetchPagesWorker | None = None
-        self._archive_worker: ArchiveWorker | None = None
+        self._move_worker: MoveWorker | None = None
 
         self._build_ui()
         self._fetch_pages()
@@ -153,17 +154,25 @@ class ArchiveDialog(QDialog):
         src_row.addWidget(self._pick_source_btn)
         layout.addLayout(src_row)
 
-        # Archive root
-        root_row = QHBoxLayout()
-        root_row.addWidget(QLabel("Archive root:"))
-        self._root_input = QLineEdit()
-        self._root_input.setPlaceholderText("e.g. Dokumentasjon/Arkiv")
-        self._pick_root_btn = QPushButton("Pick...")
-        self._pick_root_btn.setFixedWidth(60)
-        self._pick_root_btn.clicked.connect(self._on_pick_root)
-        root_row.addWidget(self._root_input)
-        root_row.addWidget(self._pick_root_btn)
-        layout.addLayout(root_row)
+        # Destination
+        dest_row = QHBoxLayout()
+        dest_row.addWidget(QLabel("Move to:"))
+        self._dest_input = QLineEdit()
+        self._dest_input.setPlaceholderText("e.g. Projects/Saved")
+        self._pick_dest_btn = QPushButton("Pick...")
+        self._pick_dest_btn.setFixedWidth(60)
+        self._pick_dest_btn.clicked.connect(self._on_pick_dest)
+        dest_row.addWidget(self._dest_input)
+        dest_row.addWidget(self._pick_dest_btn)
+        layout.addLayout(dest_row)
+
+        # Include folder name checkbox
+        self._include_folder_cb = QCheckBox(
+            "Include source folder name in destination"
+        )
+        self._include_folder_cb.setChecked(True)
+        self._include_folder_cb.toggled.connect(self._refresh_preview)
+        layout.addWidget(self._include_folder_cb)
 
         # Computed destination label
         self._dest_label = QLabel()
@@ -198,37 +207,41 @@ class ArchiveDialog(QDialog):
 
         # Buttons
         self._buttons = QDialogButtonBox()
-        self._archive_btn = self._buttons.addButton(
-            "Archive", QDialogButtonBox.ButtonRole.AcceptRole
+        self._move_btn = self._buttons.addButton(
+            "Move", QDialogButtonBox.ButtonRole.AcceptRole
         )
-        self._archive_btn.setEnabled(False)
+        self._move_btn.setEnabled(False)
         self._cancel_btn = self._buttons.addButton(
             QDialogButtonBox.StandardButton.Cancel
         )
-        self._archive_btn.clicked.connect(self._on_archive)
+        self._move_btn.clicked.connect(self._on_move)
         self._buttons.rejected.connect(self._on_cancel)
         layout.addWidget(self._buttons)
 
-        # Live-update preview when either input changes
+        # Live-update preview
         self._source_input.textChanged.connect(self._on_source_changed)
-        self._root_input.textChanged.connect(self._refresh_preview)
+        self._dest_input.textChanged.connect(self._refresh_preview)
         self._update_dest_label()
 
     # ── Computed destination ──────────────────────────────────────
 
+    def _include_folder(self) -> bool:
+        return self._include_folder_cb.isChecked()
+
     def _computed_dest(self) -> str:
-        """Return archive_root/source_folder_name."""
         source = self._source_input.text().strip()
-        root = self._root_input.text().strip()
-        if not source or not root:
+        dest = self._dest_input.text().strip()
+        if not source or not dest:
             return ""
-        folder_name = source.rsplit("/", 1)[-1]
-        return f"{root}/{folder_name}"
+        if self._include_folder():
+            folder_name = source.rsplit("/", 1)[-1]
+            return f"{dest}/{folder_name}"
+        return dest
 
     def _update_dest_label(self) -> None:
         dest = self._computed_dest()
         if dest:
-            self._dest_label.setText(f"Will archive to: {dest}")
+            self._dest_label.setText(f"Will move to: {dest}")
         else:
             self._dest_label.setText("")
 
@@ -247,7 +260,7 @@ class ArchiveDialog(QDialog):
 
     def _on_fetch_error(self, message: str) -> None:
         self._status_label.setText(f"Error: {message}")
-        logger.warning("Failed to fetch pages for archive: %s", message)
+        logger.warning("Failed to fetch pages for move: %s", message)
 
     def _on_source_changed(self) -> None:
         self._source_path = self._source_input.text().strip()
@@ -262,18 +275,18 @@ class ArchiveDialog(QDialog):
         )
         if not self._pages:
             self._status_label.setText(f"No pages found under '{source}'")
-            self._summary_label.setText("Nothing to archive.")
+            self._summary_label.setText("Nothing to move.")
             self._model.set_rows([])
-            self._archive_btn.setEnabled(False)
+            self._move_btn.setEnabled(False)
             return
 
         self._status_label.setText(
-            f"Found {len(self._pages)} page(s) to archive"
+            f"Found {len(self._pages)} page(s) to move"
         )
         self._summary_label.setText(
             f"{len(self._pages)} page(s) will be moved"
         )
-        self._archive_btn.setEnabled(True)
+        self._move_btn.setEnabled(True)
         self._refresh_preview()
 
     # ── Pick paths ───────────────────────────────────────────────
@@ -289,87 +302,90 @@ class ArchiveDialog(QDialog):
             if path:
                 self._source_input.setText(path)
 
-    def _on_pick_root(self) -> None:
+    def _on_pick_dest(self) -> None:
         dialog = WikiPathPickerDialog(
             client=self._client,
-            current_path=self._root_input.text().strip(),
+            current_path=self._dest_input.text().strip(),
             parent=self,
         )
         if dialog.exec() == QDialog.DialogCode.Accepted:
             path = dialog.selected_path()
             if path:
-                self._root_input.setText(path)
+                self._dest_input.setText(path)
 
     # ── Preview ──────────────────────────────────────────────────
 
     def _refresh_preview(self) -> None:
         self._update_dest_label()
         source = self._source_input.text().strip()
-        root = self._root_input.text().strip()
+        dest = self._dest_input.text().strip()
+        include = self._include_folder()
         rows = []
         for p in self._pages:
             old_path = p["path"]
             new_path = compute_dest_path(
-                old_path, source, root, include_folder_name=True
+                old_path, source, dest, include_folder_name=include
             )
             rows.append((old_path, new_path, ""))
         self._model.set_rows(rows)
 
-    # ── Archive execution ───────────────────────────────────────
+    # ── Move execution ──────────────────────────────────────────
 
-    def _on_archive(self) -> None:
-        root = self._root_input.text().strip()
-        if not root:
+    def _on_move(self) -> None:
+        dest = self._dest_input.text().strip()
+        if not dest:
             QMessageBox.warning(
-                self, "Missing Archive Root",
-                "Please enter an archive root path.",
+                self, "Missing Destination",
+                "Please enter a destination path.",
             )
             return
 
         if not self._pages:
             return
 
-        dest = self._computed_dest()
+        effective_dest = self._computed_dest()
         count = len(self._pages)
         reply = QMessageBox.question(
             self,
-            "Confirm Archive",
+            "Confirm Move",
             f"This will move {count} page(s):\n\n"
             f"  From: {self._source_path}\n"
-            f"  To:   {dest}\n\n"
+            f"  To:   {effective_dest}\n\n"
             f"Folder structure will be preserved.\n"
             f"Each page will be copied then deleted. Continue?",
         )
         if reply != QMessageBox.StandardButton.Yes:
             return
 
-        self._archive_btn.setEnabled(False)
+        self._move_btn.setEnabled(False)
         self._source_input.setEnabled(False)
         self._pick_source_btn.setEnabled(False)
-        self._root_input.setEnabled(False)
-        self._pick_root_btn.setEnabled(False)
+        self._dest_input.setEnabled(False)
+        self._pick_dest_btn.setEnabled(False)
+        self._include_folder_cb.setEnabled(False)
         self._progress_bar.setVisible(True)
         self._progress_bar.setMaximum(count)
         self._progress_bar.setValue(0)
 
-        self._archive_worker = ArchiveWorker(
+        self._move_worker = MoveWorker(
             client=self._client,
             pages=self._pages,
             source_path=self._source_path,
-            dest_root=root,
+            dest_root=dest,
             locale=self._locale,
+            include_folder_name=self._include_folder(),
             parent=self,
         )
-        self._archive_worker.progress.connect(self._on_progress)
-        self._archive_worker.page_done.connect(self._on_page_done)
-        self._archive_worker.finished_result.connect(self._on_finished)
-        self._archive_worker.error.connect(self._on_error)
-        self._archive_worker.start()
+        self._move_worker.progress.connect(self._on_progress)
+        self._move_worker.page_done.connect(self._on_page_done)
+        self._move_worker.finished_result.connect(self._on_finished)
+        self._move_worker.error.connect(self._on_error)
+        self._move_worker.start()
 
     def _on_cancel(self) -> None:
-        if self._archive_worker and self._archive_worker.isRunning():
-            self._archive_worker.cancel()
-            logger.info("Cancelling archive...")
+        if self._move_worker and self._move_worker.isRunning():
+            self._move_worker.cancel()
+            logger.info("Cancelling move...")
         else:
             self.reject()
 
@@ -377,7 +393,7 @@ class ArchiveDialog(QDialog):
 
     def _on_progress(self, current: int, total: int, path: str) -> None:
         self._progress_bar.setValue(current)
-        self._status_label.setText(f"Archiving {path} ({current + 1}/{total})...")
+        self._status_label.setText(f"Moving {path} ({current + 1}/{total})...")
 
     def _on_page_done(
         self, old_path: str, new_path: str, status: str, message: str
@@ -391,30 +407,31 @@ class ArchiveDialog(QDialog):
             if message:
                 logger.warning("  %s → %s [%s]", old_path, new_path, message)
             else:
-                logger.info("  Archived: %s → %s", old_path, new_path)
+                logger.info("  Moved: %s → %s", old_path, new_path)
         else:
             logger.error("  FAILED: %s — %s", old_path, message)
 
     def _on_finished(self, result: ArchiveResult) -> None:
         self._progress_bar.setValue(result.total)
-        self._status_label.setText("Archive complete")
+        self._status_label.setText("Move complete")
         self._summary_label.setText(
-            f"Archived: {result.archived}  Failed: {result.failed}  "
+            f"Moved: {result.archived}  Failed: {result.failed}  "
             f"Total: {result.total}"
         )
 
-        self._archive_btn.setVisible(False)
+        self._move_btn.setVisible(False)
         self._cancel_btn.setText("Close")
         self._buttons.rejected.disconnect(self._on_cancel)
         self._buttons.rejected.connect(self.accept)
 
     def _on_error(self, message: str) -> None:
-        self._status_label.setText("Archive error")
-        self._archive_btn.setEnabled(True)
+        self._status_label.setText("Move error")
+        self._move_btn.setEnabled(True)
         self._source_input.setEnabled(True)
         self._pick_source_btn.setEnabled(True)
-        self._root_input.setEnabled(True)
-        self._pick_root_btn.setEnabled(True)
+        self._dest_input.setEnabled(True)
+        self._pick_dest_btn.setEnabled(True)
+        self._include_folder_cb.setEnabled(True)
         self._progress_bar.setVisible(False)
-        logger.critical("Archive error: %s", message)
-        QMessageBox.critical(self, "Archive Error", message)
+        logger.critical("Move error: %s", message)
+        QMessageBox.critical(self, "Move Error", message)

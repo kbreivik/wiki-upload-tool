@@ -346,26 +346,45 @@ def find_pages_to_archive(
     ]
 
 
-def compute_archive_path(
-    old_path: str, base_path: str, archive_path: str
+def compute_dest_path(
+    page_path: str,
+    source_path: str,
+    dest_root: str,
+    include_folder_name: bool = True,
 ) -> str:
-    """Compute the destination path for a page being archived.
+    """Compute the destination path for a page being moved or archived.
 
-    The portion of *old_path* after *base_path* is appended to *archive_path*.
+    Args:
+        page_path: The page's current wiki path.
+        source_path: The source folder being moved (e.g. ``"A/B"``).
+        dest_root: The destination container path (e.g. ``"X"``).
+        include_folder_name: If ``True``, the last component of
+            *source_path* is appended to *dest_root*.  For example,
+            ``("A/B/C", "A/B", "X", True)`` produces ``"X/B/C"``.
+            If ``False``, contents are placed directly under *dest_root*:
+            ``("A/B/C", "A/B", "X", False)`` produces ``"X/C"``.
     """
-    relative = old_path[len(base_path) :].lstrip("/")
+    relative = page_path[len(source_path) :].lstrip("/")
+    if include_folder_name:
+        folder_name = source_path.rsplit("/", 1)[-1]
+        base = f"{dest_root}/{folder_name}"
+    else:
+        base = dest_root
     if relative:
-        return f"{archive_path}/{relative}"
-    return archive_path
+        return f"{base}/{relative}"
+    return base
 
 
-def _archive_single_page(
+def _move_single_page(
     client: WikiClient,
     page: dict,
     new_path: str,
     locale: str,
 ) -> ArchivePageResult:
-    """Copy a page to *new_path*, tag it ``"archived"``, then delete the original."""
+    """Copy a page to *new_path*, tag it ``"archived"``, then delete the original.
+
+    Used by both archive and move operations.
+    """
     old_path = page["path"]
     title = page.get("title", old_path)
 
@@ -456,25 +475,71 @@ ArchiveProgressCallback = Callable[[int, int, dict], None]
 def archive_pages(
     client: WikiClient,
     pages: list[dict],
-    base_path: str,
-    archive_path: str,
+    source_path: str,
+    archive_root: str,
     locale: str,
     progress_callback: ArchiveProgressCallback | None = None,
 ) -> ArchiveResult:
-    """Archive pages by copying to *archive_path* and deleting originals.
+    """Archive pages by copying to *archive_root*/{folder_name}/... and deleting originals.
+
+    The source folder name is automatically appended to *archive_root*.
 
     Args:
         client: WikiClient instance.
         pages: Pages to archive (from :func:`find_pages_to_archive`).
-        base_path: Source base path.
-        archive_path: Destination archive path.
+        source_path: Source folder being archived (e.g. ``"Docs/Docker"``).
+        archive_root: Container where archived pages go (e.g. ``"Docs/Arkiv"``).
         locale: Wiki locale.
         progress_callback: Optional ``callback(current, total, page)``.
             Raise ``StopIteration`` to cancel.
-
-    Returns:
-        :class:`ArchiveResult` with per-page details.
     """
+    return _execute_page_moves(
+        client, pages, source_path, archive_root, locale,
+        include_folder_name=True,
+        progress_callback=progress_callback,
+    )
+
+
+def move_pages(
+    client: WikiClient,
+    pages: list[dict],
+    source_path: str,
+    dest_path: str,
+    locale: str,
+    include_source_folder: bool = True,
+    progress_callback: ArchiveProgressCallback | None = None,
+) -> ArchiveResult:
+    """Move pages from *source_path* to *dest_path*.
+
+    Args:
+        client: WikiClient instance.
+        pages: Pages to move (from :func:`find_pages_to_archive`).
+        source_path: Source folder being moved.
+        dest_path: Destination path.
+        locale: Wiki locale.
+        include_source_folder: If ``True`` (default), the source folder name
+            is appended to *dest_path*. If ``False``, contents are placed
+            directly under *dest_path*.
+        progress_callback: Optional ``callback(current, total, page)``.
+            Raise ``StopIteration`` to cancel.
+    """
+    return _execute_page_moves(
+        client, pages, source_path, dest_path, locale,
+        include_folder_name=include_source_folder,
+        progress_callback=progress_callback,
+    )
+
+
+def _execute_page_moves(
+    client: WikiClient,
+    pages: list[dict],
+    source_path: str,
+    dest_root: str,
+    locale: str,
+    include_folder_name: bool,
+    progress_callback: ArchiveProgressCallback | None = None,
+) -> ArchiveResult:
+    """Shared implementation for archive and move operations."""
     result = ArchiveResult()
 
     for i, page in enumerate(pages):
@@ -483,12 +548,14 @@ def archive_pages(
                 progress_callback(i, len(pages), page)
             except StopIteration:
                 logger.info(
-                    "Archive cancelled at page %d/%d", i, len(pages)
+                    "Move cancelled at page %d/%d", i, len(pages)
                 )
                 break
 
-        new_path = compute_archive_path(page["path"], base_path, archive_path)
-        page_result = _archive_single_page(client, page, new_path, locale)
+        new_path = compute_dest_path(
+            page["path"], source_path, dest_root, include_folder_name
+        )
+        page_result = _move_single_page(client, page, new_path, locale)
         result.pages.append(page_result)
 
         if page_result.status == "archived":

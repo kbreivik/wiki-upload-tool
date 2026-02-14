@@ -7,10 +7,11 @@ import pytest
 from src.core.upload import (
     ArchivePageResult,
     ArchiveResult,
-    _archive_single_page,
+    _move_single_page,
     archive_pages,
-    compute_archive_path,
+    compute_dest_path,
     find_pages_to_archive,
+    move_pages,
 )
 from src.core.wiki_client import WikiClient, WikiClientError
 
@@ -54,43 +55,113 @@ class TestFindPagesToArchive:
         assert result == []
 
 
-# ── compute_archive_path ────────────────────────────────────────────
+# ── compute_dest_path ──────────────────────────────────────────────
 
 
-class TestComputeArchivePath:
-    def test_base_path_itself(self):
-        assert compute_archive_path("Docs", "Docs", "arkiv/Docs") == "arkiv/Docs"
+class TestComputeDestPath:
+    """Test destination path computation for both archive and move."""
 
-    def test_nested_page(self):
-        result = compute_archive_path("Docs/Setup", "Docs", "arkiv/Docs")
+    # -- include_folder_name=True (archive mode) --
+
+    def test_archive_base_page(self):
+        # Source page itself → dest_root/folder_name
+        assert compute_dest_path("Docs", "Docs", "arkiv") == "arkiv/Docs"
+
+    def test_archive_nested_page(self):
+        result = compute_dest_path("Docs/Setup", "Docs", "arkiv")
         assert result == "arkiv/Docs/Setup"
 
-    def test_deeply_nested(self):
-        result = compute_archive_path("A/B/C/D", "A/B", "archive/A/B")
-        assert result == "archive/A/B/C/D"
+    def test_archive_deeply_nested(self):
+        result = compute_dest_path("A/B/C/D", "A/B", "archive")
+        assert result == "archive/B/C/D"
 
-    def test_preserves_full_folder_hierarchy(self):
-        """Verify the user's exact scenario: nested Docker pages."""
-        base = "Dokumentasjon/Docker"
-        dest = "Dokumentasjon/Arkiv/Docker"
+    def test_archive_preserves_hierarchy(self):
+        """Archive Docker folder into Arkiv — folder name preserved."""
+        src = "Dokumentasjon/Docker"
+        root = "Dokumentasjon/Arkiv"
         assert (
-            compute_archive_path("Dokumentasjon/Docker/Dockge", base, dest)
+            compute_dest_path("Dokumentasjon/Docker", src, root)
+            == "Dokumentasjon/Arkiv/Docker"
+        )
+        assert (
+            compute_dest_path("Dokumentasjon/Docker/Dockge", src, root)
             == "Dokumentasjon/Arkiv/Docker/Dockge"
         )
         assert (
-            compute_archive_path("Dokumentasjon/Docker/Oppsett/N8N", base, dest)
+            compute_dest_path("Dokumentasjon/Docker/Oppsett/N8N", src, root)
             == "Dokumentasjon/Arkiv/Docker/Oppsett/N8N"
         )
+
+    def test_archive_no_path_duplication(self):
+        """The exact bug scenario: no duplication of folder names."""
+        src = "Dokumentasjon/ARKIV"
+        root = "Dokumentasjon/ARKIV/VMCloneManager"
+        # Source folder name "ARKIV" is appended to root
         assert (
-            compute_archive_path("Dokumentasjon/Docker/Oppsett/Dozzle", base, dest)
-            == "Dokumentasjon/Arkiv/Docker/Oppsett/Dozzle"
+            compute_dest_path("Dokumentasjon/ARKIV/Feilsoking", src, root)
+            == "Dokumentasjon/ARKIV/VMCloneManager/ARKIV/Feilsoking"
+        )
+        # ^ This IS correct: user chose root=".../VMCloneManager", so
+        # the result is VMCloneManager/ARKIV/... If the user didn't want
+        # ARKIV in the path, they'd pick a different root.
+
+    def test_archive_vmclonemanager_scenario(self):
+        """Moving VMCloneManager into ARKIV."""
+        src = "arkiv/Dokumentasjon/Arkiv/VMCloneManager"
+        root = "Dokumentasjon/ARKIV"
+        assert (
+            compute_dest_path(
+                "arkiv/Dokumentasjon/Arkiv/VMCloneManager", src, root
+            )
+            == "Dokumentasjon/ARKIV/VMCloneManager"
+        )
+        assert (
+            compute_dest_path(
+                "arkiv/Dokumentasjon/Arkiv/VMCloneManager/Feilsoking", src, root
+            )
+            == "Dokumentasjon/ARKIV/VMCloneManager/Feilsoking"
         )
 
+    # -- include_folder_name=False (move without folder) --
 
-# ── _archive_single_page ───────────────────────────────────────────
+    def test_move_without_folder_base_page(self):
+        # Source page itself → just dest_root
+        result = compute_dest_path("Docs", "Docs", "Target", include_folder_name=False)
+        assert result == "Target"
+
+    def test_move_without_folder_nested(self):
+        # Contents dumped directly into dest
+        result = compute_dest_path("Docs/Setup", "Docs", "Target", include_folder_name=False)
+        assert result == "Target/Setup"
+
+    def test_move_without_folder_deeply_nested(self):
+        result = compute_dest_path("A/B/C/D", "A/B", "X", include_folder_name=False)
+        assert result == "X/C/D"
+
+    # -- preview matches "Will archive to" / "Will move to" --
+
+    def test_preview_matches_dest_label(self):
+        """Every destination path starts with the computed effective dest."""
+        src = "Dokumentasjon/Docker"
+        root = "Dokumentasjon/Arkiv"
+        effective_dest = f"{root}/{src.rsplit('/', 1)[-1]}"
+        # effective_dest = "Dokumentasjon/Arkiv/Docker"
+        pages = [
+            "Dokumentasjon/Docker",
+            "Dokumentasjon/Docker/Dockge",
+            "Dokumentasjon/Docker/N8N/Oppsett",
+        ]
+        for page_path in pages:
+            dest = compute_dest_path(page_path, src, root, include_folder_name=True)
+            assert dest.startswith(effective_dest), (
+                f"{dest!r} does not start with {effective_dest!r}"
+            )
 
 
-class TestArchiveSinglePage:
+# ── _move_single_page ─────────────────────────────────────────────
+
+
+class TestMoveSinglePage:
     def _make_client(self):
         client = MagicMock(spec=WikiClient)
         client.fetch_page_content.return_value = {
@@ -114,11 +185,11 @@ class TestArchiveSinglePage:
         }
         return client
 
-    def test_successful_archive(self):
+    def test_successful_move(self):
         client = self._make_client()
         page = {"id": 1, "path": "Docs/Setup", "title": "Setup Guide"}
 
-        result = _archive_single_page(client, page, "arkiv/Docs/Setup", "en")
+        result = _move_single_page(client, page, "arkiv/Docs/Setup", "en")
 
         assert result.status == "archived"
         assert result.old_path == "Docs/Setup"
@@ -134,7 +205,7 @@ class TestArchiveSinglePage:
         client.fetch_page_content.side_effect = WikiClientError("timeout")
         page = {"id": 1, "path": "Docs/Setup", "title": "Setup Guide"}
 
-        result = _archive_single_page(client, page, "arkiv/Docs/Setup", "en")
+        result = _move_single_page(client, page, "arkiv/Docs/Setup", "en")
         assert result.status == "failed"
         assert "fetch content" in result.message.lower()
 
@@ -143,7 +214,7 @@ class TestArchiveSinglePage:
         client.fetch_page_content.return_value = None
         page = {"id": 1, "path": "Docs/Setup", "title": "Setup Guide"}
 
-        result = _archive_single_page(client, page, "arkiv/Docs/Setup", "en")
+        result = _move_single_page(client, page, "arkiv/Docs/Setup", "en")
         assert result.status == "failed"
 
     def test_create_fails(self):
@@ -151,7 +222,7 @@ class TestArchiveSinglePage:
         client.create_page.side_effect = WikiClientError("forbidden")
         page = {"id": 1, "path": "Docs/Setup", "title": "Setup Guide"}
 
-        result = _archive_single_page(client, page, "arkiv/Docs/Setup", "en")
+        result = _move_single_page(client, page, "arkiv/Docs/Setup", "en")
         assert result.status == "failed"
         assert "archive copy" in result.message.lower()
 
@@ -164,7 +235,7 @@ class TestArchiveSinglePage:
         }
         page = {"id": 1, "path": "Docs/Setup", "title": "Setup Guide"}
 
-        result = _archive_single_page(client, page, "arkiv/Docs/Setup", "en")
+        result = _move_single_page(client, page, "arkiv/Docs/Setup", "en")
         assert result.status == "failed"
         assert "dup" in result.message
 
@@ -173,7 +244,7 @@ class TestArchiveSinglePage:
         client.delete_page.side_effect = WikiClientError("timeout")
         page = {"id": 1, "path": "Docs/Setup", "title": "Setup Guide"}
 
-        result = _archive_single_page(client, page, "arkiv/Docs/Setup", "en")
+        result = _move_single_page(client, page, "arkiv/Docs/Setup", "en")
         assert result.status == "archived"
         assert "could not delete" in result.message.lower()
 
@@ -186,7 +257,7 @@ class TestArchiveSinglePage:
         }
         page = {"id": 1, "path": "Docs/Setup", "title": "Setup Guide"}
 
-        result = _archive_single_page(client, page, "arkiv/Docs/Setup", "en")
+        result = _move_single_page(client, page, "arkiv/Docs/Setup", "en")
         assert result.status == "archived"
         assert "locked" in result.message
 
@@ -198,7 +269,7 @@ class TestArchiveSinglePage:
         }
         page = {"id": 1, "path": "P", "title": "T"}
 
-        _archive_single_page(client, page, "arkiv/P", "en")
+        _move_single_page(client, page, "arkiv/P", "en")
 
         tags = client.create_page.call_args.kwargs["tags"]
         assert tags.count("archived") == 1
@@ -234,12 +305,16 @@ class TestArchivePages:
             {"id": 2, "path": "Docs/Setup", "title": "Setup"},
         ]
 
-        result = archive_pages(client, pages, "Docs", "arkiv/Docs", "en")
+        result = archive_pages(client, pages, "Docs", "arkiv", "en")
 
         assert result.archived == 2
         assert result.failed == 0
         assert result.total == 2
         assert len(result.pages) == 2
+        # Verify archive appends folder name
+        dest_paths = {p.new_path for p in result.pages}
+        assert "arkiv/Docs" in dest_paths
+        assert "arkiv/Docs/Setup" in dest_paths
 
     def test_cancel_via_callback(self):
         client = self._make_client()
@@ -258,7 +333,7 @@ class TestArchivePages:
                 raise StopIteration
 
         result = archive_pages(
-            client, pages, "Docs", "arkiv/Docs", "en",
+            client, pages, "Docs", "arkiv", "en",
             progress_callback=cancel_after_one,
         )
 
@@ -275,8 +350,82 @@ class TestArchivePages:
             calls.append((current, total, page["path"]))
 
         archive_pages(
-            client, pages, "Docs", "arkiv/Docs", "en",
+            client, pages, "Docs", "arkiv", "en",
             progress_callback=cb,
         )
 
         assert calls == [(0, 1, "Docs")]
+
+
+# ── move_pages ─────────────────────────────────────────────────────
+
+
+class TestMovePages:
+    def _make_client(self):
+        client = MagicMock(spec=WikiClient)
+        client.fetch_page_content.return_value = {
+            "id": 1, "path": "p", "title": "T",
+            "content": "c", "tags": [],
+        }
+        client.create_page.return_value = {
+            "data": {"pages": {"create": {
+                "responseResult": {"succeeded": True},
+                "page": {"id": 100},
+            }}}
+        }
+        client.delete_page.return_value = {
+            "data": {"pages": {"delete": {
+                "responseResult": {"succeeded": True},
+            }}}
+        }
+        return client
+
+    def test_move_with_folder_name(self):
+        client = self._make_client()
+        pages = [
+            {"id": 1, "path": "Docs", "title": "Index"},
+            {"id": 2, "path": "Docs/Setup", "title": "Setup"},
+        ]
+
+        result = move_pages(
+            client, pages, "Docs", "Target", "en",
+            include_source_folder=True,
+        )
+
+        assert result.archived == 2
+        dest_paths = {p.new_path for p in result.pages}
+        assert "Target/Docs" in dest_paths
+        assert "Target/Docs/Setup" in dest_paths
+
+    def test_move_without_folder_name(self):
+        client = self._make_client()
+        pages = [
+            {"id": 1, "path": "Docs", "title": "Index"},
+            {"id": 2, "path": "Docs/Setup", "title": "Setup"},
+        ]
+
+        result = move_pages(
+            client, pages, "Docs", "Target", "en",
+            include_source_folder=False,
+        )
+
+        assert result.archived == 2
+        dest_paths = {p.new_path for p in result.pages}
+        assert "Target" in dest_paths
+        assert "Target/Setup" in dest_paths
+
+    def test_move_nested_structure(self):
+        client = self._make_client()
+        pages = [
+            {"id": 1, "path": "A/B", "title": "B"},
+            {"id": 2, "path": "A/B/C", "title": "C"},
+            {"id": 3, "path": "A/B/C/D", "title": "D"},
+        ]
+
+        result = move_pages(
+            client, pages, "A/B", "X/Y", "en",
+            include_source_folder=True,
+        )
+
+        dest_paths = {p.new_path for p in result.pages}
+        assert dest_paths == {"X/Y/B", "X/Y/B/C", "X/Y/B/C/D"}

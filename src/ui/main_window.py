@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from PySide6.QtCore import QSettings, Qt
+from PySide6.QtCore import QSettings, QTimer, Qt
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -30,6 +30,7 @@ from src.core.upload import UploadResult, process_file
 from src.core.wiki_client import WikiClient, WikiClientError
 from src.ui.dialogs.archive_dialog import ArchiveDialog
 from src.ui.dialogs.dry_run_preview import DryRunPreviewDialog
+from src.ui.dialogs.move_dialog import MoveDialog
 from src.ui.dialogs.settings_dialog import SettingsDialog
 from src.ui.widgets.connection_indicator import ConnectionIndicator
 from src.ui.widgets.wiki_path_picker import WikiPathPickerDialog
@@ -51,10 +52,14 @@ class MainWindow(QMainWindow):
         self._test_worker: TestConnectionWorker | None = None
         self._settings = QSettings("wiki-upload-tool", "wiki-upload-tool")
         self._strip_patterns: list[str] = []
+        self._auto_testing = False
 
         self._build_ui()
         self._setup_logging()
         self._restore_settings()
+
+        # Auto-test connection after the window renders
+        QTimer.singleShot(500, self._auto_test_connection)
 
     # ── UI construction ─────────────────────────────────────────
 
@@ -206,6 +211,11 @@ class MainWindow(QMainWindow):
         self._archive_btn.clicked.connect(self._on_archive)
         row.addWidget(self._archive_btn)
 
+        self._move_btn = QPushButton("Move...")
+        self._move_btn.setEnabled(False)
+        self._move_btn.clicked.connect(self._on_move)
+        row.addWidget(self._move_btn)
+
         row.addStretch()
 
         self._settings_btn = QPushButton("Settings...")
@@ -259,6 +269,32 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event: object) -> None:
         self._save_settings()
         super().closeEvent(event)
+
+    # ── Auto-connect on startup ─────────────────────────────────
+
+    def _auto_test_connection(self) -> None:
+        """Check credentials and auto-test or guide the user."""
+        url = self._wiki_url.text().strip()
+        key = self._api_key.text().strip()
+
+        if not url or not key:
+            # First run or cleared settings — guide user to empty fields
+            logger.info("Enter your Wiki.js URL and API key to get started")
+            if not url:
+                self._wiki_url.setFocus()
+            else:
+                self._api_key.setFocus()
+            return
+
+        # Returning user — auto-test silently
+        self._auto_testing = True
+        self._connection_indicator.set_testing()
+        self._test_btn.setEnabled(False)
+
+        self._test_worker = TestConnectionWorker(url.rstrip("/"), key)
+        self._test_worker.success.connect(self._on_test_success)
+        self._test_worker.failure.connect(self._on_test_failure)
+        self._test_worker.start()
 
     # ── Config builder ─────────────────────────────────────────
 
@@ -354,35 +390,54 @@ class MainWindow(QMainWindow):
         self._test_worker.start()
 
     def _on_test_success(self) -> None:
+        self._auto_testing = False
         self._connection_indicator.set_connected()
         self._test_btn.setEnabled(True)
         self._pick_path_btn.setEnabled(True)
         self._archive_btn.setEnabled(True)
+        self._move_btn.setEnabled(True)
         logger.info("Connection test passed")
         # Clear any error styling on API key field
         self._api_key.setStyleSheet("")
 
     def _on_test_failure(self, message: str) -> None:
+        was_auto = self._auto_testing
+        self._auto_testing = False
         self._test_btn.setEnabled(True)
         self._pick_path_btn.setEnabled(False)
         self._archive_btn.setEnabled(False)
+        self._move_btn.setEnabled(False)
+
+        url = self._wiki_url.text().strip().rstrip("/")
 
         if "401" in message or "403" in message:
-            self._connection_indicator.set_disconnected("Auth failed")
+            short = "Auth failed"
+            detail = "Connected to server but API key was rejected — check your key"
             self._api_key.setStyleSheet("border: 2px solid red;")
-            QMessageBox.warning(
-                self, "Authentication Failed",
-                "Authentication failed — check your API key.",
-            )
-        else:
-            self._connection_indicator.set_disconnected("Connection failed")
+        elif "getaddrinfo" in message or "Name or service not known" in message or "nodename nor servname" in message:
+            hostname = url.split("//")[-1].split("/")[0] if url else "unknown"
+            short = "DNS error"
+            detail = f"Could not resolve {hostname} — check the URL"
             self._api_key.setStyleSheet("")
-            logger.error("Connection failed: %s", message)
+        elif "Connection refused" in message or "timed out" in message or "timeout" in message.lower():
+            short = "Unreachable"
+            detail = f"Could not reach {url} — server may be offline or URL is incorrect"
+            self._api_key.setStyleSheet("")
+        else:
+            short = "Connection failed"
+            detail = f"Connection failed: {message}"
+            self._api_key.setStyleSheet("")
+
+        self._connection_indicator.set_disconnected(short)
+        logger.error(detail)
+
+        if not was_auto:
+            QMessageBox.warning(self, "Connection Failed", detail)
 
     def _on_archive(self) -> None:
         url = self._wiki_url.text().strip().rstrip("/")
         key = self._api_key.text().strip()
-        base = self._base_path.text().strip()
+        source = self._base_path.text().strip()
         locale = self._locale.currentText().strip()
         if not url or not key:
             QMessageBox.warning(
@@ -390,17 +445,32 @@ class MainWindow(QMainWindow):
                 "Wiki URL and API key are required.",
             )
             return
-        if not base:
-            QMessageBox.warning(
-                self, "Missing Base Path",
-                "Enter a base path to archive pages from.",
-            )
-            return
 
         client = WikiClient(url, key)
         dialog = ArchiveDialog(
             client=client,
-            base_path=base,
+            source_path=source,
+            locale=locale,
+            parent=self,
+        )
+        dialog.exec()
+
+    def _on_move(self) -> None:
+        url = self._wiki_url.text().strip().rstrip("/")
+        key = self._api_key.text().strip()
+        source = self._base_path.text().strip()
+        locale = self._locale.currentText().strip()
+        if not url or not key:
+            QMessageBox.warning(
+                self, "Missing Config",
+                "Wiki URL and API key are required.",
+            )
+            return
+
+        client = WikiClient(url, key)
+        dialog = MoveDialog(
+            client=client,
+            source_path=source,
             locale=locale,
             parent=self,
         )
