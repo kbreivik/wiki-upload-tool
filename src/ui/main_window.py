@@ -28,6 +28,7 @@ from src.core.discovery import discover_files, generate_slug, parse_frontmatter
 from src.core.links import build_link_map
 from src.core.upload import UploadResult, process_file
 from src.core.wiki_client import WikiClient, WikiClientError
+from src.ui.dialogs.archive_dialog import ArchiveDialog
 from src.ui.dialogs.dry_run_preview import DryRunPreviewDialog
 from src.ui.dialogs.settings_dialog import SettingsDialog
 from src.ui.widgets.connection_indicator import ConnectionIndicator
@@ -200,6 +201,11 @@ class MainWindow(QMainWindow):
         self._cancel_btn.clicked.connect(self._on_cancel)
         row.addWidget(self._cancel_btn)
 
+        self._archive_btn = QPushButton("Archive...")
+        self._archive_btn.setEnabled(False)
+        self._archive_btn.clicked.connect(self._on_archive)
+        row.addWidget(self._archive_btn)
+
         row.addStretch()
 
         self._settings_btn = QPushButton("Settings...")
@@ -351,6 +357,7 @@ class MainWindow(QMainWindow):
         self._connection_indicator.set_connected()
         self._test_btn.setEnabled(True)
         self._pick_path_btn.setEnabled(True)
+        self._archive_btn.setEnabled(True)
         logger.info("Connection test passed")
         # Clear any error styling on API key field
         self._api_key.setStyleSheet("")
@@ -358,6 +365,7 @@ class MainWindow(QMainWindow):
     def _on_test_failure(self, message: str) -> None:
         self._test_btn.setEnabled(True)
         self._pick_path_btn.setEnabled(False)
+        self._archive_btn.setEnabled(False)
 
         if "401" in message or "403" in message:
             self._connection_indicator.set_disconnected("Auth failed")
@@ -370,6 +378,33 @@ class MainWindow(QMainWindow):
             self._connection_indicator.set_disconnected("Connection failed")
             self._api_key.setStyleSheet("")
             logger.error("Connection failed: %s", message)
+
+    def _on_archive(self) -> None:
+        url = self._wiki_url.text().strip().rstrip("/")
+        key = self._api_key.text().strip()
+        base = self._base_path.text().strip()
+        locale = self._locale.currentText().strip()
+        if not url or not key:
+            QMessageBox.warning(
+                self, "Missing Config",
+                "Wiki URL and API key are required.",
+            )
+            return
+        if not base:
+            QMessageBox.warning(
+                self, "Missing Base Path",
+                "Enter a base path to archive pages from.",
+            )
+            return
+
+        client = WikiClient(url, key)
+        dialog = ArchiveDialog(
+            client=client,
+            base_path=base,
+            locale=locale,
+            parent=self,
+        )
+        dialog.exec()
 
     def _on_pick_path(self) -> None:
         url = self._wiki_url.text().strip().rstrip("/")

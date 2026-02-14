@@ -296,6 +296,212 @@ def _upload_single_page(
             )
 
 
+# ── Archive ─────────────────────────────────────────────────────────
+
+
+@dataclass
+class ArchivePageResult:
+    """Result of archiving a single page."""
+
+    old_path: str
+    new_path: str
+    title: str
+    status: str  # "archived", "failed"
+    message: str = ""
+
+
+@dataclass
+class ArchiveResult:
+    """Aggregate result of an archive batch."""
+
+    archived: int = 0
+    failed: int = 0
+    pages: list[ArchivePageResult] = field(default_factory=list)
+
+    @property
+    def total(self) -> int:
+        return self.archived + self.failed
+
+
+def find_pages_to_archive(
+    all_pages: list[dict],
+    base_path: str,
+    locale: str,
+) -> list[dict]:
+    """Filter pages that fall under *base_path* and match *locale*.
+
+    Args:
+        all_pages: Full page list from ``WikiClient.fetch_page_list()``.
+        base_path: Wiki path prefix to match (e.g. ``"Documentation/MyProject"``).
+        locale: Locale code to filter on.
+
+    Returns:
+        Subset of *all_pages* whose path equals or is nested under *base_path*.
+    """
+    return [
+        p
+        for p in all_pages
+        if (p["path"] == base_path or p["path"].startswith(base_path + "/"))
+        and p.get("locale", "en") == locale
+    ]
+
+
+def compute_archive_path(
+    old_path: str, base_path: str, archive_path: str
+) -> str:
+    """Compute the destination path for a page being archived.
+
+    The portion of *old_path* after *base_path* is appended to *archive_path*.
+    """
+    relative = old_path[len(base_path) :].lstrip("/")
+    if relative:
+        return f"{archive_path}/{relative}"
+    return archive_path
+
+
+def _archive_single_page(
+    client: WikiClient,
+    page: dict,
+    new_path: str,
+    locale: str,
+) -> ArchivePageResult:
+    """Copy a page to *new_path*, tag it ``"archived"``, then delete the original."""
+    old_path = page["path"]
+    title = page.get("title", old_path)
+
+    # Fetch full content
+    try:
+        full_page = client.fetch_page_content(page["id"])
+    except WikiClientError as e:
+        return ArchivePageResult(
+            old_path=old_path, new_path=new_path, title=title,
+            status="failed", message=f"Could not fetch content: {e}",
+        )
+
+    if not full_page:
+        return ArchivePageResult(
+            old_path=old_path, new_path=new_path, title=title,
+            status="failed", message="Could not fetch page content",
+        )
+
+    # Create archive copy
+    tags = [t["tag"] for t in full_page.get("tags", [])]
+    if "archived" not in tags:
+        tags.append("archived")
+
+    try:
+        api_result = client.create_page(
+            content=full_page["content"],
+            description=full_page.get("description", ""),
+            editor="markdown",
+            is_published=True,
+            is_private=False,
+            locale=locale,
+            path=new_path,
+            tags=tags,
+            title=full_page["title"],
+        )
+    except WikiClientError as e:
+        return ArchivePageResult(
+            old_path=old_path, new_path=new_path, title=title,
+            status="failed", message=f"Could not create archive copy: {e}",
+        )
+
+    resp = (
+        api_result.get("data", {})
+        .get("pages", {})
+        .get("create", {})
+        .get("responseResult", {})
+    )
+    if not resp.get("succeeded"):
+        msg = f"{resp.get('errorCode', 'unknown')}: {resp.get('message', 'no details')}"
+        return ArchivePageResult(
+            old_path=old_path, new_path=new_path, title=title,
+            status="failed", message=f"Create failed: {msg}",
+        )
+
+    # Delete original
+    try:
+        del_result = client.delete_page(page["id"])
+    except WikiClientError as e:
+        return ArchivePageResult(
+            old_path=old_path, new_path=new_path, title=title,
+            status="archived",
+            message=f"Archived but could not delete original: {e}",
+        )
+
+    del_resp = (
+        del_result.get("data", {})
+        .get("pages", {})
+        .get("delete", {})
+        .get("responseResult", {})
+    )
+    if del_resp.get("succeeded"):
+        return ArchivePageResult(
+            old_path=old_path, new_path=new_path, title=title,
+            status="archived",
+        )
+    else:
+        msg = del_resp.get("message", "unknown error")
+        return ArchivePageResult(
+            old_path=old_path, new_path=new_path, title=title,
+            status="archived",
+            message=f"Archived but delete failed: {msg}",
+        )
+
+
+ArchiveProgressCallback = Callable[[int, int, dict], None]
+
+
+def archive_pages(
+    client: WikiClient,
+    pages: list[dict],
+    base_path: str,
+    archive_path: str,
+    locale: str,
+    progress_callback: ArchiveProgressCallback | None = None,
+) -> ArchiveResult:
+    """Archive pages by copying to *archive_path* and deleting originals.
+
+    Args:
+        client: WikiClient instance.
+        pages: Pages to archive (from :func:`find_pages_to_archive`).
+        base_path: Source base path.
+        archive_path: Destination archive path.
+        locale: Wiki locale.
+        progress_callback: Optional ``callback(current, total, page)``.
+            Raise ``StopIteration`` to cancel.
+
+    Returns:
+        :class:`ArchiveResult` with per-page details.
+    """
+    result = ArchiveResult()
+
+    for i, page in enumerate(pages):
+        if progress_callback:
+            try:
+                progress_callback(i, len(pages), page)
+            except StopIteration:
+                logger.info(
+                    "Archive cancelled at page %d/%d", i, len(pages)
+                )
+                break
+
+        new_path = compute_archive_path(page["path"], base_path, archive_path)
+        page_result = _archive_single_page(client, page, new_path, locale)
+        result.pages.append(page_result)
+
+        if page_result.status == "archived":
+            result.archived += 1
+        else:
+            result.failed += 1
+
+    return result
+
+
+# ── Tree helpers ────────────────────────────────────────────────────
+
+
 def build_tree(pages: list[dict]) -> dict:
     """Build a nested dict tree from a flat list of page dicts with 'path' keys."""
     tree: dict = {}
