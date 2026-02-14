@@ -23,6 +23,7 @@ class WikiClient:
         self.url = url.rstrip("/")
         self.api_key = api_key
         self.timeout = timeout
+        self._pages_cache: list[dict] | None = None
 
     def graphql_request(
         self, query: str, variables: dict | None = None
@@ -230,29 +231,22 @@ class WikiClient:
         """
         return self.graphql_request(query, {"id": page_id})
 
-    def fetch_tags(self) -> list[str]:
-        """Fetch all tags from Wiki.js, sorted alphabetically.
+    def fetch_pages(self, *, force: bool = False) -> list[dict]:
+        """Fetch all pages with their tags. Cached after first call.
+
+        Each page dict has keys: ``id``, ``path``, ``title``, ``locale``,
+        ``tags`` (list of strings).  If a page has no tags or the field is
+        missing, ``tags`` will be an empty list.
+
+        Args:
+            force: If ``True``, bypass the cache and re-fetch.
 
         Returns:
-            List of tag strings.
+            List of page dicts, ordered by path.
         """
-        query = """
-        {
-          tags {
-            list {
-              tag
-            }
-          }
-        }
-        """
-        result = self.graphql_request(query)
-        tags_data = result.get("data", {}).get("tags", {}).get("list")
-        if not tags_data:
-            return []
-        return sorted(t["tag"] for t in tags_data)
+        if self._pages_cache is not None and not force:
+            return self._pages_cache
 
-    def fetch_page_list(self) -> list[dict]:
-        """Fetch all pages as a flat list."""
         query = """
         {
           pages {
@@ -261,13 +255,78 @@ class WikiClient:
               path
               title
               locale
+              tags
             }
           }
         }
         """
         result = self.graphql_request(query)
-        pages = result.get("data", {}).get("pages", {}).get("list")
-        return pages if pages else []
+        raw_pages = result.get("data", {}).get("pages", {}).get("list")
+        if not raw_pages:
+            self._pages_cache = []
+            return self._pages_cache
+
+        # Normalise tags: may be list[str], list[dict], or missing
+        pages: list[dict] = []
+        for p in raw_pages:
+            raw_tags = p.get("tags")
+            if raw_tags is None:
+                tags: list[str] = []
+            elif raw_tags and isinstance(raw_tags[0], dict):
+                # Some API versions return [{"tag": "x"}, ...]
+                tags = [t.get("tag", "") for t in raw_tags if t.get("tag")]
+            elif isinstance(raw_tags, list):
+                tags = [str(t) for t in raw_tags]
+            else:
+                tags = []
+            pages.append({
+                "id": p["id"],
+                "path": p["path"],
+                "title": p.get("title", ""),
+                "locale": p.get("locale", "en"),
+                "tags": tags,
+            })
+
+        self._pages_cache = pages
+        return self._pages_cache
+
+    def invalidate_cache(self) -> None:
+        """Clear the cached page list. Call after mutations."""
+        self._pages_cache = None
+
+    def fetch_page_list(self) -> list[dict]:
+        """Fetch all pages as a flat list (uses cached data).
+
+        Returns page dicts with ``id``, ``path``, ``title``, ``locale``,
+        and ``tags`` keys.
+        """
+        return self.fetch_pages()
+
+    def fetch_tags(self) -> list[str]:
+        """Extract all unique tags across all pages, sorted alphabetically.
+
+        Uses the cached page list to avoid a separate API call.
+        """
+        pages = self.fetch_pages()
+        tags: set[str] = set()
+        for p in pages:
+            tags.update(p.get("tags", []))
+        return sorted(tags)
+
+    def fetch_page_tags(self, page_id: int) -> list[str]:
+        """Get tags for a specific page from the cached page list.
+
+        Falls back to fetching page content if not in cache.
+        """
+        pages = self.fetch_pages()
+        for p in pages:
+            if p["id"] == page_id:
+                return list(p.get("tags", []))
+        # Not in cache — fall back to individual fetch
+        page = self.fetch_page_content(page_id)
+        if not page:
+            return []
+        return [t["tag"] for t in page.get("tags", [])]
 
     def fetch_page_content(self, page_id: int) -> dict | None:
         """Fetch a single page's full content by ID."""
@@ -292,11 +351,15 @@ class WikiClient:
         return page if page else None
 
     def fetch_page_tags(self, page_id: int) -> list[str]:
-        """Fetch current tags for a specific page.
+        """Get tags for a specific page from the cached page list.
 
-        Returns:
-            List of tag strings.
+        Falls back to fetching page content if not in cache.
         """
+        pages = self.fetch_pages()
+        for p in pages:
+            if p["id"] == page_id:
+                return list(p.get("tags", []))
+        # Not in cache — fall back to individual fetch
         page = self.fetch_page_content(page_id)
         if not page:
             return []

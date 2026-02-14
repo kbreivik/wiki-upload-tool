@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, call
 import pytest
 
 from src.core.upload import TagOperation, TagResult, apply_tag_changes
-from src.core.wiki_client import WikiClientError
+from src.core.wiki_client import WikiClient, WikiClientError
 
 
 def _make_mock_client(succeed: bool = True) -> MagicMock:
@@ -265,41 +265,83 @@ class TestApplyTagChangesProgress:
 
 
 class TestFetchPageTags:
-    """Test fetch_page_tags returns correct data."""
+    """Test fetch_page_tags returns correct data from cached pages."""
 
-    def test_fetch_page_tags(self) -> None:
-        client = MagicMock()
-        client.fetch_page_content.return_value = {
-            "id": 42,
-            "path": "docs/page",
-            "title": "Test Page",
-            "description": "",
-            "content": "# Test",
-            "tags": [{"tag": "docker"}, {"tag": "linux"}],
-        }
+    def _make_client(self, pages: list[dict]) -> WikiClient:
+        """Create a WikiClient with pre-populated cache."""
+        client = WikiClient.__new__(WikiClient)
+        client._pages_cache = pages
+        return client
 
-        from src.core.wiki_client import WikiClient
-        # Call the real method with the mock's return value
-        page = client.fetch_page_content(42)
-        tags = [t["tag"] for t in page.get("tags", [])]
+    def test_fetch_page_tags_from_cache(self) -> None:
+        client = self._make_client([
+            {"id": 42, "path": "docs/page", "title": "Test Page",
+             "locale": "en", "tags": ["docker", "linux"]},
+            {"id": 43, "path": "docs/other", "title": "Other",
+             "locale": "en", "tags": ["networking"]},
+        ])
 
+        tags = client.fetch_page_tags(42)
         assert tags == ["docker", "linux"]
-        client.fetch_page_content.assert_called_once_with(42)
 
     def test_fetch_page_tags_empty(self) -> None:
-        client = MagicMock()
-        client.fetch_page_content.return_value = {
-            "id": 42,
-            "path": "docs/page",
-            "title": "Test Page",
-            "description": "",
-            "content": "# Test",
-            "tags": [],
-        }
+        client = self._make_client([
+            {"id": 42, "path": "docs/page", "title": "Test Page",
+             "locale": "en", "tags": []},
+        ])
 
-        page = client.fetch_page_content(42)
-        tags = [t["tag"] for t in page.get("tags", [])]
+        tags = client.fetch_page_tags(42)
+        assert tags == []
 
+    def test_fetch_page_tags_not_in_cache_falls_back(self) -> None:
+        """Falls back to fetch_page_content when page not in cache."""
+        client = self._make_client([])  # empty cache
+        client.fetch_page_content = MagicMock(return_value={
+            "id": 99, "path": "x", "title": "X",
+            "tags": [{"tag": "fallback"}],
+            "content": "", "description": "",
+        })
+
+        tags = client.fetch_page_tags(99)
+        assert tags == ["fallback"]
+        client.fetch_page_content.assert_called_once_with(99)
+
+
+class TestFetchTags:
+    """Test fetch_tags extracts unique tags from cached pages."""
+
+    def _make_client(self, pages: list[dict]) -> WikiClient:
+        """Create a WikiClient with pre-populated cache."""
+        client = WikiClient.__new__(WikiClient)
+        client._pages_cache = pages
+        return client
+
+    def test_fetch_tags_deduplicates_and_sorts(self) -> None:
+        client = self._make_client([
+            {"id": 1, "path": "a", "title": "A", "locale": "en",
+             "tags": ["docker", "linux"]},
+            {"id": 2, "path": "b", "title": "B", "locale": "en",
+             "tags": ["linux", "networking"]},
+            {"id": 3, "path": "c", "title": "C", "locale": "en",
+             "tags": []},
+        ])
+
+        tags = client.fetch_tags()
+        assert tags == ["docker", "linux", "networking"]
+
+    def test_fetch_tags_empty_pages(self) -> None:
+        client = self._make_client([])
+
+        tags = client.fetch_tags()
+        assert tags == []
+
+    def test_fetch_tags_no_tags_field(self) -> None:
+        """Pages without tags key are handled gracefully."""
+        client = self._make_client([
+            {"id": 1, "path": "a", "title": "A", "locale": "en"},
+        ])
+
+        tags = client.fetch_tags()
         assert tags == []
 
 

@@ -57,25 +57,15 @@ class _FetchPagesWorker(QThread):
 
     def run(self) -> None:
         try:
-            all_pages = self._client.fetch_page_list()
-            # Filter to path and locale
+            all_pages = self._client.fetch_pages(force=True)
+            # Filter to path and locale; tags are already included
             filtered = [
                 p for p in all_pages
                 if (p["path"] == self._base_path
                     or p["path"].startswith(self._base_path + "/"))
                 and p.get("locale", "en") == self._locale
             ]
-            # Fetch tags for each page
-            results = []
-            for page in filtered:
-                tags = self._client.fetch_page_tags(page["id"])
-                results.append({
-                    "id": page["id"],
-                    "path": page["path"],
-                    "title": page["title"],
-                    "tags": tags,
-                })
-            self.finished.emit(results)
+            self.finished.emit(filtered)
         except WikiClientError as e:
             self.error.emit(str(e))
         except Exception as e:
