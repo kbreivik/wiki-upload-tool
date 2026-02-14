@@ -63,6 +63,34 @@ def load_dotenv(env_path):
     return env_vars
 
 
+def _update_env_file(env_path, updates):
+    """Update or append key=value pairs in a .env file."""
+    lines = []
+    if os.path.isfile(env_path):
+        with open(env_path, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+
+    updated_keys = set()
+    new_lines = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped and not stripped.startswith('#') and '=' in stripped:
+            key = stripped.split('=', 1)[0].strip()
+            if key in updates:
+                new_lines.append(f"{key}={updates[key]}\n")
+                updated_keys.add(key)
+                continue
+        new_lines.append(line)
+
+    # Append any keys that weren't already in the file
+    for key, value in updates.items():
+        if key not in updated_keys:
+            new_lines.append(f"{key}={value}\n")
+
+    with open(env_path, 'w', encoding='utf-8') as f:
+        f.writelines(new_lines)
+
+
 def parse_frontmatter(content):
     """
     Parse YAML frontmatter from markdown content.
@@ -399,6 +427,270 @@ def update_page(wiki_url, api_key, page_id, content, description, tags, title):
     return graphql_request(wiki_url, api_key, query, variables)
 
 
+def fetch_page_list(wiki_url, api_key):
+    """Fetch all pages from Wiki.js as a flat list."""
+    query = """
+    {
+      pages {
+        list(orderBy: PATH) {
+          id
+          path
+          title
+          locale
+        }
+      }
+    }
+    """
+    result = graphql_request(wiki_url, api_key, query)
+    if result and result.get("data", {}).get("pages", {}).get("list"):
+        return result["data"]["pages"]["list"]
+    return []
+
+
+def build_tree(pages):
+    """Build a nested dict tree from a flat list of page paths."""
+    tree = {}
+    for page in pages:
+        parts = page["path"].split("/")
+        node = tree
+        for part in parts[:-1]:
+            if part not in node:
+                node[part] = {"_children": {}}
+            elif "_children" not in node[part]:
+                node[part]["_children"] = {}
+            node = node[part]["_children"]
+        leaf = parts[-1]
+        if leaf not in node:
+            node[leaf] = {"_page": page}
+        else:
+            node[leaf]["_page"] = page
+    return tree
+
+
+def print_tree(tree, prefix="", is_last=True, is_root=True):
+    """Render a nested tree dict with box-drawing characters."""
+    keys = sorted(k for k in tree if not k.startswith("_"))
+    for i, key in enumerate(keys):
+        last = (i == len(keys) - 1)
+        node = tree[key]
+        page = node.get("_page")
+        children = node.get("_children", {})
+        label = node.get("_label", "")
+
+        if is_root:
+            connector = ""
+            child_prefix = ""
+        else:
+            connector = prefix + ("└── " if last else "├── ")
+            child_prefix = prefix + ("    " if last else "│   ")
+
+        # Build display name
+        display = key
+        if page:
+            display = f"{key}  ({page.get('title', '')})"
+        if label:
+            display = f"{key}  {label}"
+
+        if children:
+            print(f"{connector}{display}/")
+            print_tree(children, child_prefix, last, is_root=False)
+        else:
+            print(f"{connector}{display}")
+
+
+def preview_placement(wiki_pages, base_path, local_files, locale, index_file='README.md'):
+    """
+    Show a merged tree of existing wiki pages + proposed new pages.
+    Marks [NEW] and [EXISTS] accordingly.
+    """
+    # Build set of existing paths
+    existing_paths = set()
+    for p in wiki_pages:
+        existing_paths.add(p["path"])
+
+    # Build tree from existing pages under base_path or its parent
+    parent_path = "/".join(base_path.split("/")[:-1]) if "/" in base_path else ""
+    relevant_pages = []
+    for p in wiki_pages:
+        path = p["path"]
+        # Show pages under the parent to give context
+        if parent_path and path.startswith(parent_path):
+            relevant_pages.append(p)
+        elif not parent_path and "/" not in path:
+            relevant_pages.append(p)
+
+    tree = build_tree(relevant_pages)
+
+    # Add proposed new pages to tree
+    for file_info in local_files:
+        filename = file_info['filename']
+        slug = generate_slug(filename, index_file)
+
+        if slug:
+            wiki_path = f"{base_path}/{slug}"
+        else:
+            wiki_path = base_path
+
+        # Check if page already exists
+        if wiki_path in existing_paths:
+            label = "[EXISTS]"
+        else:
+            label = "[NEW]"
+
+        parts = wiki_path.split("/")
+        node = tree
+        for part in parts[:-1]:
+            if part not in node:
+                node[part] = {"_children": {}}
+            elif "_children" not in node[part]:
+                node[part]["_children"] = {}
+            node = node[part]["_children"]
+        leaf = parts[-1]
+        if leaf not in node:
+            node[leaf] = {"_label": label}
+        else:
+            node[leaf]["_label"] = label
+
+    return tree
+
+
+def delete_page(wiki_url, api_key, page_id):
+    """Delete a page by ID via wiki.js GraphQL API."""
+    query = """
+    mutation ($id: Int!) {
+      pages {
+        delete(id: $id) {
+          responseResult {
+            succeeded
+            errorCode
+            message
+          }
+        }
+      }
+    }
+    """
+    return graphql_request(wiki_url, api_key, query, {"id": page_id})
+
+
+def fetch_page_content(wiki_url, api_key, page_id):
+    """Fetch a single page's full content by ID."""
+    query = """
+    query ($id: Int!) {
+      pages {
+        single(id: $id) {
+          id
+          path
+          title
+          description
+          content
+          tags {
+            tag
+          }
+        }
+      }
+    }
+    """
+    result = graphql_request(wiki_url, api_key, query, {"id": page_id})
+    if result and result.get("data", {}).get("pages", {}).get("single"):
+        return result["data"]["pages"]["single"]
+    return None
+
+
+def archive_pages(wiki_url, api_key, base_path, archive_path, locale):
+    """
+    Archive existing pages: copy to archive path, then delete originals.
+
+    Returns:
+        tuple: (archived_count, failed_count)
+    """
+    print(f"\nArchiving pages from '{base_path}' to '{archive_path}'...")
+    print("-" * 50)
+
+    # Fetch all pages
+    all_pages = fetch_page_list(wiki_url, api_key)
+
+    # Find pages under base_path
+    pages_to_archive = []
+    for p in all_pages:
+        if p["path"] == base_path or p["path"].startswith(base_path + "/"):
+            if p.get("locale", "en") == locale:
+                pages_to_archive.append(p)
+
+    if not pages_to_archive:
+        print(f"  No pages found under '{base_path}' to archive.")
+        return 0, 0
+
+    print(f"  Found {len(pages_to_archive)} page(s) to archive\n")
+
+    archived = 0
+    failed = 0
+
+    for p in pages_to_archive:
+        old_path = p["path"]
+        # Build new archive path
+        relative = old_path[len(base_path):].lstrip("/")
+        if relative:
+            new_path = f"{archive_path}/{relative}"
+        else:
+            new_path = archive_path
+
+        print(f"  {old_path} -> {new_path}")
+
+        # Fetch full content
+        full_page = fetch_page_content(wiki_url, api_key, p["id"])
+        if not full_page:
+            print(f"    FAILED - could not fetch content")
+            failed += 1
+            continue
+
+        # Create archive copy
+        tags = [t["tag"] for t in full_page.get("tags", [])]
+        tags.append("archived")
+
+        result = create_page(
+            wiki_url, api_key,
+            content=full_page["content"],
+            description=full_page.get("description", ""),
+            editor="markdown",
+            is_published=True,
+            is_private=False,
+            locale=locale,
+            path=new_path,
+            tags=tags,
+            title=full_page["title"],
+        )
+
+        if not result:
+            print(f"    FAILED - could not create archive copy")
+            failed += 1
+            continue
+
+        create_resp = result.get("data", {}).get("pages", {}).get("create", {}).get("responseResult", {})
+        if not create_resp.get("succeeded"):
+            print(f"    FAILED - {create_resp.get('message', 'unknown error')}")
+            failed += 1
+            continue
+
+        # Delete original
+        del_result = delete_page(wiki_url, api_key, p["id"])
+        if not del_result:
+            print(f"    WARN - archived but could not delete original")
+            archived += 1
+            continue
+
+        del_resp = del_result.get("data", {}).get("pages", {}).get("delete", {}).get("responseResult", {})
+        if del_resp.get("succeeded"):
+            print(f"    OK - archived and deleted")
+            archived += 1
+        else:
+            print(f"    WARN - archived but delete failed: {del_resp.get('message', '')}")
+            archived += 1
+
+    print(f"\n  Archived: {archived}  Failed: {failed}")
+    print("-" * 50)
+    return archived, failed
+
+
 def process_file(file_info, link_map, args):
     """Process a single markdown file for upload."""
     filepath = file_info['filepath']
@@ -491,6 +783,12 @@ Examples:
                         help="Regex pattern for footer removal (repeatable)")
     parser.add_argument("--index-file", default="README.md",
                         help="File to use as index page (default: README.md)")
+    parser.add_argument("--browse", action="store_true",
+                        help="Connect and display current wiki page tree, then exit")
+    parser.add_argument("--interactive", action="store_true",
+                        help="Interactive mode: browse tree, pick path, preview, archive, upload")
+    parser.add_argument("--archive", default=None, metavar="PATH",
+                        help="Archive existing pages at --base-path to this path before uploading")
 
     args = parser.parse_args()
 
@@ -512,16 +810,82 @@ Examples:
     if not args.locale:
         args.locale = env_vars.get("WIKIJS_LOCALE", "en")
 
-    # Validate required settings
+    # Detect placeholder/example values and prompt for real ones
+    placeholders = {
+        "your-api-key-here": "WIKIJS_API_KEY",
+        "https://wiki.example.com": "WIKIJS_URL",
+        "http://wiki.example.com": "WIKIJS_URL",
+        "wiki.example.com": "WIKIJS_URL",
+        "Documentation/MyProject": "WIKIJS_BASE_PATH",
+        "./docs": "WIKIJS_SOURCE_DIR",
+    }
+
+    prompts = {
+        "WIKIJS_API_KEY": "Wiki.js API key (from Admin > API Access)",
+        "WIKIJS_URL": "Wiki.js URL (e.g., https://wiki.yourdomain.com)",
+        "WIKIJS_BASE_PATH": "Base path for pages (e.g., Dokumentasjon/Prosjekt)",
+        "WIKIJS_SOURCE_DIR": "Path to folder with .md files",
+    }
+
+    field_map = {
+        "WIKIJS_API_KEY": "api_key",
+        "WIKIJS_URL": "wiki_url",
+        "WIKIJS_BASE_PATH": "base_path",
+        "WIKIJS_SOURCE_DIR": "source_dir",
+    }
+
+    env_updates = {}
+
+    def check_placeholder(value, env_key):
+        """Check if a value is a placeholder and prompt for real value."""
+        if not value:
+            return value
+        for placeholder, pkey in placeholders.items():
+            if pkey == env_key and value == placeholder:
+                print(f"\n  '{value}' looks like an example/placeholder value.")
+                try:
+                    new_val = input(f"  {prompts[env_key]}: ").strip()
+                except EOFError:
+                    return value
+                if new_val:
+                    env_updates[env_key] = new_val
+                    return new_val
+                return value
+        return value
+
+    # Always check API key and URL
+    args.api_key = check_placeholder(args.api_key, "WIKIJS_API_KEY")
+    args.wiki_url = check_placeholder(args.wiki_url, "WIKIJS_URL")
+
+    # Only check base_path and source_dir when they're actually needed
+    if not args.browse:
+        args.base_path = check_placeholder(args.base_path, "WIKIJS_BASE_PATH")
+        args.source_dir = check_placeholder(args.source_dir, "WIKIJS_SOURCE_DIR")
+
+    # Offer to save updated values back to .env
+    if env_updates:
+        try:
+            save = input("\nSave these values to .env for next time? [Y/n]: ").strip().lower()
+        except EOFError:
+            save = "y"
+        if save not in ('n', 'no', 'nei'):
+            _update_env_file(env_path, env_updates)
+            print(f"  Saved to {env_path}")
+        print()
+
+    # Validate required settings (relaxed for --browse mode)
     missing = []
     if not args.api_key or args.api_key == "your-api-key-here":
         missing.append("--api-key (or WIKIJS_API_KEY in .env)")
-    if not args.wiki_url:
+    if not args.wiki_url or "example.com" in args.wiki_url:
         missing.append("--wiki-url (or WIKIJS_URL in .env)")
-    if not args.base_path:
-        missing.append("--base-path (or WIKIJS_BASE_PATH in .env)")
-    if not args.source_dir:
-        missing.append("--source-dir (or WIKIJS_SOURCE_DIR in .env)")
+
+    # --base-path and --source-dir not required for --browse
+    if not args.browse and not args.interactive:
+        if not args.base_path or args.base_path == "Documentation/MyProject":
+            missing.append("--base-path (or WIKIJS_BASE_PATH in .env)")
+        if not args.source_dir:
+            missing.append("--source-dir (or WIKIJS_SOURCE_DIR in .env)")
 
     if missing:
         print("Error: Missing required settings:")
@@ -530,13 +894,145 @@ Examples:
         print("\nProvide these via command line arguments or in .env file.")
         sys.exit(1)
 
-    # Validate source directory exists
-    if not os.path.isdir(args.source_dir):
-        print(f"Error: Source directory not found: {args.source_dir}")
-        sys.exit(1)
-
     # Strip trailing slash from URL
     args.wiki_url = args.wiki_url.rstrip('/')
+
+    # === BROWSE MODE ===
+    if args.browse:
+        print(f"Connecting to {args.wiki_url}...")
+        test_result = graphql_request(args.wiki_url, args.api_key, "{ __typename }")
+        if not test_result:
+            print("Error: Could not connect to Wiki.js API. Check URL and API key.")
+            sys.exit(1)
+        print(f"Connected.\n")
+
+        all_pages = fetch_page_list(args.wiki_url, args.api_key)
+        if not all_pages:
+            print("No pages found on this wiki.")
+            return
+
+        # Filter by locale
+        locale_pages = [p for p in all_pages if p.get("locale", "en") == args.locale]
+        print(f"Wiki page tree ({len(locale_pages)} pages, locale: {args.locale}):")
+        print("=" * 60)
+        tree = build_tree(locale_pages)
+        print_tree(tree)
+        print("=" * 60)
+        return
+
+    # === INTERACTIVE MODE ===
+    if args.interactive:
+        # Connect
+        print(f"Connecting to {args.wiki_url}...")
+        test_result = graphql_request(args.wiki_url, args.api_key, "{ __typename }")
+        if not test_result:
+            print("Error: Could not connect to Wiki.js API. Check URL and API key.")
+            sys.exit(1)
+        print(f"Connected.\n")
+
+        # Fetch and show current tree
+        all_pages = fetch_page_list(args.wiki_url, args.api_key)
+        locale_pages = [p for p in all_pages if p.get("locale", "en") == args.locale]
+
+        print(f"Current wiki structure ({len(locale_pages)} pages, locale: {args.locale}):")
+        print("=" * 60)
+        if locale_pages:
+            tree = build_tree(locale_pages)
+            print_tree(tree)
+        else:
+            print("  (empty)")
+        print("=" * 60)
+
+        # Ask for source directory if not set
+        if not args.source_dir:
+            args.source_dir = input("\nPath to folder with .md files: ").strip()
+            if not args.source_dir:
+                print("No source directory provided.")
+                sys.exit(1)
+
+        if not os.path.isdir(args.source_dir):
+            print(f"Error: Source directory not found: {args.source_dir}")
+            sys.exit(1)
+
+        files = discover_files(args.source_dir, args.index_file)
+        if not files:
+            print(f"No markdown files found in: {args.source_dir}")
+            sys.exit(1)
+
+        print(f"\nFound {len(files)} file(s) in {os.path.abspath(args.source_dir)}:")
+        for f in files:
+            print(f"  {f['filename']}")
+
+        # Ask for base path if not set
+        if not args.base_path:
+            args.base_path = input("\nWhere should these pages be placed? (e.g., Documentation/MyProject): ").strip()
+            if not args.base_path:
+                print("No base path provided.")
+                sys.exit(1)
+
+        # Show preview
+        print(f"\nPreview - how the wiki will look after upload:")
+        print("=" * 60)
+        preview_tree = preview_placement(locale_pages, args.base_path, files, args.locale, args.index_file)
+        print_tree(preview_tree)
+        print("=" * 60)
+
+        # Check for existing pages at target
+        existing_at_target = [p for p in locale_pages
+                              if p["path"] == args.base_path or p["path"].startswith(args.base_path + "/")]
+
+        if existing_at_target:
+            print(f"\n{len(existing_at_target)} existing page(s) found at '{args.base_path}':")
+            for p in existing_at_target:
+                print(f"  /{args.locale}/{p['path']}  ({p['title']})")
+
+            archive_choice = input(f"\nArchive them to 'arkiv/{args.base_path}' before uploading? [y/N]: ").strip().lower()
+            if archive_choice in ('y', 'yes', 'ja'):
+                archive_path = f"arkiv/{args.base_path}"
+                custom_path = input(f"Archive path [{archive_path}]: ").strip()
+                if custom_path:
+                    archive_path = custom_path
+
+                if args.dry_run:
+                    print(f"\n[DRY RUN] Would archive {len(existing_at_target)} pages to '{archive_path}'")
+                else:
+                    archive_pages(args.wiki_url, args.api_key, args.base_path, archive_path, args.locale)
+
+        # Confirm upload
+        confirm = input(f"\nProceed with upload to '{args.base_path}'? [y/N]: ").strip().lower()
+        if confirm not in ('y', 'yes', 'ja'):
+            print("Aborted.")
+            return
+
+        # Fall through to normal upload flow below
+        print()
+
+    # === STANDARD UPLOAD FLOW ===
+
+    # Validate source dir for non-interactive mode
+    if not args.interactive:
+        if not args.base_path:
+            print("Error: --base-path required")
+            sys.exit(1)
+        if not args.source_dir:
+            print("Error: --source-dir required")
+            sys.exit(1)
+        if not os.path.isdir(args.source_dir):
+            print(f"Error: Source directory not found: {args.source_dir}")
+            sys.exit(1)
+
+    # Handle non-interactive archive
+    if args.archive and not args.interactive:
+        if not args.dry_run:
+            print(f"Connecting to {args.wiki_url}...")
+            test_result = graphql_request(args.wiki_url, args.api_key, "{ __typename }")
+            if not test_result:
+                print("Error: Could not connect to Wiki.js API.")
+                sys.exit(1)
+            archive_pages(args.wiki_url, args.api_key, args.base_path, args.archive, args.locale)
+        else:
+            print(f"[DRY RUN] Would archive pages from '{args.base_path}' to '{args.archive}'")
+        print()
 
     print(f"Wiki.js URL:    {args.wiki_url}")
     print(f"Base path:      {args.base_path}")
