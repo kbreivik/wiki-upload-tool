@@ -296,6 +296,96 @@ def _upload_single_page(
             )
 
 
+# ── Tag management ──────────────────────────────────────────────────
+
+
+@dataclass
+class TagOperation:
+    """Describes a tag change for a single page."""
+
+    page_id: int
+    page_path: str
+    page_title: str
+    current_tags: list[str] = field(default_factory=list)
+    new_tags: list[str] = field(default_factory=list)
+
+
+@dataclass
+class TagResult:
+    """Aggregate result of a bulk tag operation."""
+
+    updated: int = 0
+    skipped: int = 0
+    failed: int = 0
+
+    @property
+    def total(self) -> int:
+        return self.updated + self.skipped + self.failed
+
+
+TagProgressCallback = Callable[[int, int, TagOperation], None]
+
+
+def apply_tag_changes(
+    client: WikiClient,
+    operations: list[TagOperation],
+    progress_callback: TagProgressCallback | None = None,
+) -> TagResult:
+    """Apply tag changes to wiki pages.
+
+    Skips pages where ``current_tags`` and ``new_tags`` are identical.
+
+    Args:
+        client: WikiClient instance.
+        operations: List of tag operations to apply.
+        progress_callback: Optional ``callback(current, total, operation)``.
+            Raise ``StopIteration`` to cancel.
+
+    Returns:
+        TagResult with counts of updated, skipped, and failed pages.
+    """
+    result = TagResult()
+
+    for i, op in enumerate(operations):
+        if progress_callback:
+            try:
+                progress_callback(i, len(operations), op)
+            except StopIteration:
+                logger.info(
+                    "Tag operation cancelled at page %d/%d", i, len(operations)
+                )
+                break
+
+        if sorted(op.current_tags) == sorted(op.new_tags):
+            result.skipped += 1
+            continue
+
+        try:
+            api_result = client.update_page_tags(op.page_id, op.new_tags)
+        except WikiClientError as e:
+            logger.error(
+                "Failed to update tags on %s: %s", op.page_path, e
+            )
+            result.failed += 1
+            continue
+
+        resp = (
+            api_result.get("data", {})
+            .get("pages", {})
+            .get("update", {})
+            .get("responseResult", {})
+        )
+        if resp.get("succeeded"):
+            logger.info("Updated tags on %s", op.page_path)
+            result.updated += 1
+        else:
+            msg = f"{resp.get('errorCode', 'unknown')}: {resp.get('message', 'no details')}"
+            logger.error("Failed to update tags on %s: %s", op.page_path, msg)
+            result.failed += 1
+
+    return result
+
+
 # ── Archive ─────────────────────────────────────────────────────────
 
 

@@ -32,6 +32,7 @@ from src.ui.dialogs.archive_dialog import ArchiveDialog
 from src.ui.dialogs.dry_run_preview import DryRunPreviewDialog
 from src.ui.dialogs.move_dialog import MoveDialog
 from src.ui.dialogs.settings_dialog import SettingsDialog
+from src.ui.dialogs.tag_manager_dialog import TagManagerDialog
 from src.ui.widgets.connection_indicator import ConnectionIndicator
 from src.ui.widgets.wiki_path_picker import WikiPathPickerDialog
 from src.ui.widgets.file_table import FileTableView
@@ -226,6 +227,11 @@ class MainWindow(QMainWindow):
         self._move_btn.clicked.connect(self._on_move)
         row.addWidget(self._move_btn)
 
+        self._tag_mgr_btn = QPushButton("Tag Manager...")
+        self._tag_mgr_btn.setEnabled(False)
+        self._tag_mgr_btn.clicked.connect(self._on_tag_manager)
+        row.addWidget(self._tag_mgr_btn)
+
         row.addStretch()
 
         self._settings_btn = QPushButton("Settings...")
@@ -407,6 +413,7 @@ class MainWindow(QMainWindow):
         self._pick_path_btn.setEnabled(True)
         self._archive_btn.setEnabled(True)
         self._move_btn.setEnabled(True)
+        self._tag_mgr_btn.setEnabled(True)
         logger.info("Connection test passed")
         # Clear any error styling on API key field
         self._api_key.setStyleSheet("")
@@ -420,6 +427,7 @@ class MainWindow(QMainWindow):
         self._pick_path_btn.setEnabled(False)
         self._archive_btn.setEnabled(False)
         self._move_btn.setEnabled(False)
+        self._tag_mgr_btn.setEnabled(False)
 
         url = self._wiki_url.text().strip().rstrip("/")
 
@@ -505,6 +513,27 @@ class MainWindow(QMainWindow):
             client=client,
             source_path=source,
             locale=locale,
+            parent=self,
+        )
+        dialog.exec()
+
+    def _on_tag_manager(self) -> None:
+        url = self._wiki_url.text().strip().rstrip("/")
+        key = self._api_key.text().strip()
+        locale = self._locale.currentText().strip()
+        if not url or not key:
+            QMessageBox.warning(
+                self, "Missing Config",
+                "Wiki URL and API key are required.",
+            )
+            return
+
+        client = WikiClient(url, key)
+        wiki_tags = self._tag_editor.get_tags()
+        dialog = TagManagerDialog(
+            client=client,
+            locale=locale,
+            wiki_tags=wiki_tags,
             parent=self,
         )
         dialog.exec()

@@ -290,3 +290,39 @@ class WikiClient:
         result = self.graphql_request(query, {"id": page_id})
         page = result.get("data", {}).get("pages", {}).get("single")
         return page if page else None
+
+    def fetch_page_tags(self, page_id: int) -> list[str]:
+        """Fetch current tags for a specific page.
+
+        Returns:
+            List of tag strings.
+        """
+        page = self.fetch_page_content(page_id)
+        if not page:
+            return []
+        return [t["tag"] for t in page.get("tags", [])]
+
+    def update_page_tags(self, page_id: int, tags: list[str]) -> dict:
+        """Update only the tags on an existing page.
+
+        Uses the pages.update mutation with only the tags field.
+        """
+        query = """
+        mutation ($id: Int!, $tags: [String]) {
+          pages {
+            update(id: $id, tags: $tags) {
+              responseResult {
+                succeeded
+                errorCode
+                message
+              }
+              page {
+                id
+                path
+                title
+              }
+            }
+          }
+        }
+        """
+        return self.graphql_request(query, {"id": page_id, "tags": tags})

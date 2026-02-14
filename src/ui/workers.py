@@ -10,9 +10,12 @@ from src.core.config import Config
 from src.core.upload import (
     ArchivePageResult,
     ArchiveResult,
+    TagOperation,
+    TagResult,
     UploadResult,
     _move_single_page,
     _upload_single_page,
+    apply_tag_changes,
     compute_dest_path,
 )
 from src.core.wiki_client import WikiClient, WikiClientError
@@ -249,3 +252,85 @@ class MoveWorker(_PageMoveWorkerBase):
     ) -> None:
         super().__init__(client, pages, source_path, dest_root, locale, parent)
         self._include_folder_name = include_folder_name
+
+
+class TagManagerWorker(QThread):
+    """Background thread for applying bulk tag changes.
+
+    Signals:
+        progress(int, int, str): (current_index, total, page_path)
+        page_done(str, str): (page_path, status) where status is
+            "updated", "skipped", or "failed"
+        finished_result(TagResult): emitted when operation completes
+        error(str): emitted on unexpected exception
+    """
+
+    progress = Signal(int, int, str)
+    page_done = Signal(str, str)
+    finished_result = Signal(TagResult)
+    error = Signal(str)
+
+    def __init__(
+        self,
+        client: WikiClient,
+        operations: list[TagOperation],
+        parent: object = None,
+    ) -> None:
+        super().__init__(parent)
+        self._client = client
+        self._operations = operations
+        self._cancel_event = threading.Event()
+
+    def cancel(self) -> None:
+        """Request cancellation. Checked between pages."""
+        self._cancel_event.set()
+
+    def run(self) -> None:
+        try:
+            result = TagResult()
+            total = len(self._operations)
+
+            for i, op in enumerate(self._operations):
+                if self._cancel_event.is_set():
+                    logger.info(
+                        "Tag manager cancelled at page %d/%d", i, total
+                    )
+                    break
+
+                self.progress.emit(i, total, op.page_path)
+
+                if sorted(op.current_tags) == sorted(op.new_tags):
+                    result.skipped += 1
+                    self.page_done.emit(op.page_path, "skipped")
+                    continue
+
+                try:
+                    api_result = self._client.update_page_tags(
+                        op.page_id, op.new_tags
+                    )
+                except WikiClientError as e:
+                    logger.error(
+                        "Failed to update tags on %s: %s", op.page_path, e
+                    )
+                    result.failed += 1
+                    self.page_done.emit(op.page_path, "failed")
+                    continue
+
+                resp = (
+                    api_result.get("data", {})
+                    .get("pages", {})
+                    .get("update", {})
+                    .get("responseResult", {})
+                )
+                if resp.get("succeeded"):
+                    result.updated += 1
+                    self.page_done.emit(op.page_path, "updated")
+                else:
+                    result.failed += 1
+                    self.page_done.emit(op.page_path, "failed")
+
+            self.finished_result.emit(result)
+        except Exception:
+            tb = traceback.format_exc()
+            logger.critical("Unexpected error in tag manager worker:\n%s", tb)
+            self.error.emit(tb)
