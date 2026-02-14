@@ -39,7 +39,7 @@ from src.ui.widgets.file_table import FileTableView
 from src.ui.widgets.log_viewer import LogHandler, LogViewer
 from src.ui.widgets.chip_editor import ChipEditor
 from src.ui.widgets.tag_editor import TagEditor
-from src.ui.workers import FetchTagsWorker, TestConnectionWorker, UploadWorker
+from src.ui.workers import TestConnectionWorker, UploadWorker
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +52,6 @@ class MainWindow(QMainWindow):
 
         self._upload_worker: UploadWorker | None = None
         self._test_worker: TestConnectionWorker | None = None
-        self._tags_worker: FetchTagsWorker | None = None
         self._settings = QSettings("wiki-upload-tool", "wiki-upload-tool")
         self._auto_testing = False
 
@@ -417,8 +416,6 @@ class MainWindow(QMainWindow):
         logger.info("Connection test passed")
         # Clear any error styling on API key field
         self._api_key.setStyleSheet("")
-        # Fetch wiki tags
-        self._fetch_wiki_tags()
 
     def _on_test_failure(self, message: str) -> None:
         was_auto = self._auto_testing
@@ -455,25 +452,6 @@ class MainWindow(QMainWindow):
 
         if not was_auto:
             QMessageBox.warning(self, "Connection Failed", detail)
-
-    def _fetch_wiki_tags(self) -> None:
-        """Fetch tags from wiki in background after connection succeeds."""
-        url = self._wiki_url.text().strip().rstrip("/")
-        key = self._api_key.text().strip()
-        if not url or not key:
-            return
-        client = WikiClient(url, key)
-        self._tags_worker = FetchTagsWorker(client)
-        self._tags_worker.tags_fetched.connect(self._on_tags_fetched)
-        self._tags_worker.failure.connect(self._on_tags_fetch_failed)
-        self._tags_worker.start()
-
-    def _on_tags_fetched(self, tags: list[str]) -> None:
-        self._tag_editor.set_wiki_tags(tags)
-        logger.info("Loaded %d tag(s) from wiki", len(tags))
-
-    def _on_tags_fetch_failed(self, message: str) -> None:
-        logger.warning("Failed to fetch tags: %s", message)
 
     def _on_archive(self) -> None:
         url = self._wiki_url.text().strip().rstrip("/")
@@ -529,11 +507,9 @@ class MainWindow(QMainWindow):
             return
 
         client = WikiClient(url, key)
-        wiki_tags = self._tag_editor.get_tags()
         dialog = TagManagerDialog(
             client=client,
             locale=locale,
-            wiki_tags=wiki_tags,
             parent=self,
         )
         dialog.exec()

@@ -5,11 +5,11 @@ import logging
 from PySide6.QtCore import (
     QAbstractTableModel,
     QModelIndex,
+    QSettings,
     QThread,
     Qt,
     Signal,
 )
-from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
@@ -165,8 +165,7 @@ class _TagCheckboxSection(QWidget):
 
         self._scroll = QScrollArea()
         self._scroll.setWidgetResizable(True)
-        self._scroll.setMaximumHeight(80)
-        self._scroll.setMinimumHeight(30)
+        self._scroll.setMinimumHeight(80)
 
         self._flow_container = QWidget()
         self._flow_layout = FlowLayout(self._flow_container, margin=4, spacing=6)
@@ -196,6 +195,11 @@ class _TagCheckboxSection(QWidget):
         self._checkboxes.clear()
         for tag in sorted(tags):
             self._add_checkbox(tag)
+        # Force Qt to recalculate layout immediately
+        self._flow_container.updateGeometry()
+        self._flow_container.adjustSize()
+        self._scroll.updateGeometry()
+        self.updateGeometry()
 
     def _add_checkbox(self, tag: str) -> None:
         if tag in self._checkboxes:
@@ -232,23 +236,29 @@ class TagManagerDialog(QDialog):
         self,
         client: WikiClient,
         locale: str,
-        wiki_tags: list[str] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Tag Manager")
-        self.setMinimumSize(750, 600)
+        self.setMinimumSize(800, 500)
 
         self._client = client
         self._locale = locale
-        self._wiki_tags = wiki_tags or []
+        self._all_wiki_tags: list[str] | None = None  # cached wiki-wide tags
         self._worker: TagManagerWorker | None = None
         self._fetch_worker: _FetchPagesWorker | None = None
+        self._settings = QSettings("wiki-upload-tool", "wiki-upload-tool")
 
         self._build_ui()
+        self._restore_settings()
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
+
+        # ── Left panel ───────────────────────────────────────
+        left = QWidget()
+        left_layout = QVBoxLayout(left)
+        left_layout.setContentsMargins(0, 0, 0, 0)
 
         # Path selector row
         path_row = QHBoxLayout()
@@ -266,7 +276,7 @@ class TagManagerDialog(QDialog):
         self._load_btn.setFixedWidth(60)
         self._load_btn.clicked.connect(self._on_load)
         path_row.addWidget(self._load_btn)
-        root.addLayout(path_row)
+        left_layout.addLayout(path_row)
 
         # Page table
         self._model = _PageTagModel()
@@ -293,26 +303,18 @@ class TagManagerDialog(QDialog):
         sel_row.addWidget(select_all_btn)
         sel_row.addWidget(deselect_all_btn)
         sel_row.addStretch()
+        left_layout.addLayout(sel_row)
 
-        table_widget = QWidget()
-        table_layout = QVBoxLayout(table_widget)
-        table_layout.setContentsMargins(0, 0, 0, 0)
-        table_layout.addLayout(sel_row)
-        table_layout.addWidget(self._table)
-
-        # Bottom half: tag sections + preview
-        bottom_widget = QWidget()
-        bottom_layout = QVBoxLayout(bottom_widget)
-        bottom_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.addWidget(self._table, stretch=1)
 
         # Add tags section
         add_group = QGroupBox("Add tags:")
         add_layout = QVBoxLayout(add_group)
         self._add_section = _TagCheckboxSection("Add")
-        self._add_section.set_tags(self._wiki_tags)
+        self._add_section.set_tags([])
         self._add_section.selection_changed.connect(self._update_preview)
         add_layout.addWidget(self._add_section)
-        bottom_layout.addWidget(add_group)
+        left_layout.addWidget(add_group)
 
         # Remove tags section
         remove_group = QGroupBox("Remove tags (from selected pages):")
@@ -323,32 +325,9 @@ class TagManagerDialog(QDialog):
         )
         self._remove_section.selection_changed.connect(self._update_preview)
         remove_layout.addWidget(self._remove_section)
-        bottom_layout.addWidget(remove_group)
+        left_layout.addWidget(remove_group)
 
-        # Preview section
-        preview_group = QGroupBox("Preview:")
-        preview_layout = QVBoxLayout(preview_group)
-        self._preview_scroll = QScrollArea()
-        self._preview_scroll.setWidgetResizable(True)
-        self._preview_scroll.setMaximumHeight(120)
-        self._preview_container = QWidget()
-        self._preview_layout = QVBoxLayout(self._preview_container)
-        self._preview_layout.setContentsMargins(4, 4, 4, 4)
-        self._preview_layout.setSpacing(2)
-        self._preview_layout.addStretch()
-        self._preview_scroll.setWidget(self._preview_container)
-        preview_layout.addWidget(self._preview_scroll)
-        bottom_layout.addWidget(preview_group)
-
-        # Splitter between table and tag sections
-        splitter = QSplitter(Qt.Orientation.Vertical)
-        splitter.addWidget(table_widget)
-        splitter.addWidget(bottom_widget)
-        splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 1)
-        root.addWidget(splitter, stretch=1)
-
-        # Bottom: buttons + progress
+        # Buttons
         btn_row = QHBoxLayout()
         self._cancel_btn = QPushButton("Cancel")
         self._cancel_btn.clicked.connect(self.reject)
@@ -358,14 +337,63 @@ class TagManagerDialog(QDialog):
         self._apply_btn.setEnabled(False)
         self._apply_btn.clicked.connect(self._on_apply)
         btn_row.addWidget(self._apply_btn)
-        root.addLayout(btn_row)
+        left_layout.addLayout(btn_row)
 
         self._progress_bar = QProgressBar()
         self._progress_bar.setVisible(False)
-        root.addWidget(self._progress_bar)
+        left_layout.addWidget(self._progress_bar)
 
         self._status_label = QLabel("")
-        root.addWidget(self._status_label)
+        left_layout.addWidget(self._status_label)
+
+        # ── Right panel (Preview) ────────────────────────────
+        preview_group = QGroupBox("Preview:")
+        preview_layout = QVBoxLayout(preview_group)
+        self._preview_scroll = QScrollArea()
+        self._preview_scroll.setWidgetResizable(True)
+        self._preview_container = QWidget()
+        self._preview_layout = QVBoxLayout(self._preview_container)
+        self._preview_layout.setContentsMargins(4, 4, 4, 4)
+        self._preview_layout.setSpacing(2)
+        self._preview_layout.addStretch()
+        self._preview_scroll.setWidget(self._preview_container)
+        preview_layout.addWidget(self._preview_scroll)
+
+        # ── Horizontal splitter ──────────────────────────────
+        self._splitter = QSplitter(Qt.Orientation.Horizontal)
+        self._splitter.addWidget(left)
+        self._splitter.addWidget(preview_group)
+        self._splitter.setStretchFactor(0, 3)  # 60%
+        self._splitter.setStretchFactor(1, 2)  # 40%
+        root.addWidget(self._splitter, stretch=1)
+
+    # ── Settings persistence ─────────────────────────────────
+
+    def _restore_settings(self) -> None:
+        geo = self._settings.value("tag_manager/geometry")
+        if geo:
+            self.restoreGeometry(geo)
+        else:
+            self.resize(1000, 700)
+        splitter_state = self._settings.value("tag_manager/splitter")
+        if splitter_state:
+            self._splitter.restoreState(splitter_state)
+
+    def _save_settings(self) -> None:
+        self._settings.setValue("tag_manager/geometry", self.saveGeometry())
+        self._settings.setValue("tag_manager/splitter", self._splitter.saveState())
+
+    def closeEvent(self, event: object) -> None:
+        self._save_settings()
+        super().closeEvent(event)
+
+    def accept(self) -> None:
+        self._save_settings()
+        super().accept()
+
+    def reject(self) -> None:
+        self._save_settings()
+        super().reject()
 
     # ── Path picker ─────────────────────────────────────────────
 
@@ -404,18 +432,20 @@ class TagManagerDialog(QDialog):
         self._apply_btn.setEnabled(len(pages) > 0)
         self._status_label.setText(f"Loaded {len(pages)} page(s)")
 
-        # Collect tags from the loaded pages (same data the table displays)
-        page_tags: set[str] = set()
-        for page in pages:
-            page_tags.update(page.get("tags", []))
+        # Fetch wiki-wide tags for the Add section (cached for session).
+        # The worker already populated the client's page cache via
+        # fetch_pages(force=True), so fetch_tags() reads from cache
+        # without a network call.
+        if self._all_wiki_tags is None:
+            self._all_wiki_tags = self._client.fetch_tags()
+            logger.debug(
+                "_on_pages_loaded: cached %d wiki-wide tags: %s",
+                len(self._all_wiki_tags), self._all_wiki_tags,
+            )
+        self._add_section.set_tags(self._all_wiki_tags)
 
-        # Merge with wiki-wide tags for the Add section
-        all_tags = sorted(set(self._wiki_tags) | page_tags)
-        logger.debug(
-            "_on_pages_loaded: %d pages, page_tags=%s, wiki_tags=%s, merged=%s",
-            len(pages), sorted(page_tags), self._wiki_tags, all_tags,
-        )
-        self._add_section.set_tags(all_tags)
+        # Remove section is updated by _on_page_selection_changed
+        # (triggered automatically by model reset signal)
 
         if not pages:
             QMessageBox.information(
