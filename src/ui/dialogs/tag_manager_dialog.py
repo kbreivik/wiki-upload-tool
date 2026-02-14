@@ -11,8 +11,10 @@ from PySide6.QtCore import (
     Signal,
 )
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QDialog,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
@@ -30,7 +32,6 @@ from PySide6.QtWidgets import (
 
 from src.core.upload import TagOperation, TagResult
 from src.core.wiki_client import WikiClient, WikiClientError
-from src.ui.widgets.flow_layout import FlowLayout
 from src.ui.widgets.wiki_path_picker import WikiPathPickerDialog
 from src.ui.workers import TagManagerWorker
 
@@ -148,8 +149,14 @@ class _PageTagModel(QAbstractTableModel):
 
 
 class _TagCheckboxSection(QWidget):
-    """Scrollable grid of tag checkboxes with custom add."""
+    """Scrollable grid of tag checkboxes with custom add.
 
+    Uses QGridLayout (fixed 4 columns) instead of FlowLayout to avoid
+    the chicken-and-egg height-for-width bug where tags are hidden
+    until the first resize event.
+    """
+
+    _COLUMNS = 4
     selection_changed = Signal()
 
     def __init__(
@@ -165,11 +172,13 @@ class _TagCheckboxSection(QWidget):
 
         self._scroll = QScrollArea()
         self._scroll.setWidgetResizable(True)
-        self._scroll.setMinimumHeight(80)
+        self._scroll.setMinimumHeight(100)
 
-        self._flow_container = QWidget()
-        self._flow_layout = FlowLayout(self._flow_container, margin=4, spacing=6)
-        self._scroll.setWidget(self._flow_container)
+        self._grid_container = QWidget()
+        self._grid_layout = QGridLayout(self._grid_container)
+        self._grid_layout.setContentsMargins(4, 4, 4, 4)
+        self._grid_layout.setSpacing(6)
+        self._scroll.setWidget(self._grid_container)
         root.addWidget(self._scroll)
 
         # Custom add row
@@ -195,9 +204,9 @@ class _TagCheckboxSection(QWidget):
         self._checkboxes.clear()
         for tag in sorted(tags):
             self._add_checkbox(tag)
-        # Force Qt to recalculate layout immediately
-        self._flow_container.updateGeometry()
-        self._flow_container.adjustSize()
+        # Force Qt to process layout before the dialog is shown
+        QApplication.processEvents()
+        self._grid_container.updateGeometry()
         self._scroll.updateGeometry()
         self.updateGeometry()
 
@@ -209,7 +218,8 @@ class _TagCheckboxSection(QWidget):
             cb.setStyleSheet(self._style)
         cb.checkStateChanged.connect(lambda _: self.selection_changed.emit())
         self._checkboxes[tag] = cb
-        self._flow_layout.addWidget(cb)
+        count = len(self._checkboxes) - 1
+        self._grid_layout.addWidget(cb, count // self._COLUMNS, count % self._COLUMNS)
 
     def _add_custom(self) -> None:
         tag = self._custom_input.text().strip()
@@ -484,6 +494,8 @@ class TagManagerDialog(QDialog):
             len(checked), sorted(all_tags),
         )
         self._remove_section.set_tags(sorted(all_tags))
+        QApplication.processEvents()
+        self._remove_section.updateGeometry()
         self._update_preview()
 
     # ── Preview ─────────────────────────────────────────────────
