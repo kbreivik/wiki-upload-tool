@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 
-from PySide6.QtCore import QAbstractTableModel, QModelIndex, QThread, Qt, Signal
+from PySide6.QtCore import QAbstractTableModel, QModelIndex, QSettings, QThread, Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -136,6 +136,7 @@ class MoveDialog(QDialog):
         self._pages: list[dict] = []
         self._fetch_worker: _FetchPagesWorker | None = None
         self._move_worker: MoveWorker | None = None
+        self._settings = QSettings("wiki-upload-tool", "wiki-upload-tool")
 
         self._build_ui()
         self._fetch_pages()
@@ -157,7 +158,8 @@ class MoveDialog(QDialog):
         # Destination
         dest_row = QHBoxLayout()
         dest_row.addWidget(QLabel("Move to:"))
-        self._dest_input = QLineEdit()
+        saved_dest = self._settings.value("move/dest_path", "", str)
+        self._dest_input = QLineEdit(saved_dest)
         self._dest_input.setPlaceholderText("e.g. Projects/Saved")
         self._pick_dest_btn = QPushButton("Pick...")
         self._pick_dest_btn.setFixedWidth(60)
@@ -418,6 +420,11 @@ class MoveDialog(QDialog):
             f"Moved: {result.archived}  Failed: {result.failed}  "
             f"Total: {result.total}"
         )
+
+        if result.archived > 0:
+            self._settings.setValue(
+                "move/dest_path", self._dest_input.text().strip()
+            )
 
         self._move_btn.setVisible(False)
         self._cancel_btn.setText("Close")

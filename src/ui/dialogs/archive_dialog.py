@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 
-from PySide6.QtCore import QAbstractTableModel, QModelIndex, QThread, Qt, Signal
+from PySide6.QtCore import QAbstractTableModel, QModelIndex, QSettings, QThread, Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QDialog,
@@ -135,6 +135,7 @@ class ArchiveDialog(QDialog):
         self._pages: list[dict] = []
         self._fetch_worker: _FetchPagesWorker | None = None
         self._archive_worker: ArchiveWorker | None = None
+        self._settings = QSettings("wiki-upload-tool", "wiki-upload-tool")
 
         self._build_ui()
         self._fetch_pages()
@@ -156,7 +157,8 @@ class ArchiveDialog(QDialog):
         # Archive root
         root_row = QHBoxLayout()
         root_row.addWidget(QLabel("Archive root:"))
-        self._root_input = QLineEdit()
+        saved_root = self._settings.value("archive/root_path", "", str)
+        self._root_input = QLineEdit(saved_root)
         self._root_input.setPlaceholderText("e.g. Dokumentasjon/Arkiv")
         self._pick_root_btn = QPushButton("Pick...")
         self._pick_root_btn.setFixedWidth(60)
@@ -402,6 +404,11 @@ class ArchiveDialog(QDialog):
             f"Archived: {result.archived}  Failed: {result.failed}  "
             f"Total: {result.total}"
         )
+
+        if result.archived > 0:
+            self._settings.setValue(
+                "archive/root_path", self._root_input.text().strip()
+            )
 
         self._archive_btn.setVisible(False)
         self._cancel_btn.setText("Close")
