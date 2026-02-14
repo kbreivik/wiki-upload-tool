@@ -329,7 +329,10 @@ class WikiClient:
         return [t["tag"] for t in page.get("tags", [])]
 
     def fetch_page_content(self, page_id: int) -> dict | None:
-        """Fetch a single page's full content by ID."""
+        """Fetch a single page's full content and metadata by ID.
+
+        Returns all fields needed for a full page update.
+        """
         query = """
         query ($id: Int!) {
           pages {
@@ -339,6 +342,9 @@ class WikiClient:
               title
               description
               content
+              locale
+              isPublished
+              isPrivate
               tags {
                 tag
               }
@@ -350,30 +356,60 @@ class WikiClient:
         page = result.get("data", {}).get("pages", {}).get("single")
         return page if page else None
 
-    def fetch_page_tags(self, page_id: int) -> list[str]:
-        """Get tags for a specific page from the cached page list.
+    def update_page_tags(self, page_id: int, tags: list[str]) -> dict:
+        """Update tags on an existing page.
 
-        Falls back to fetching page content if not in cache.
+        Wiki.js v2 requires ALL fields in the update mutation, so this
+        fetches the full page first and re-sends everything with only
+        tags modified.
+
+        Args:
+            page_id: Page ID to update.
+            tags: New tags as a list of plain strings.
+
+        Returns:
+            GraphQL response dict.
+
+        Raises:
+            WikiClientError: If the page cannot be fetched or updated.
         """
-        pages = self.fetch_pages()
-        for p in pages:
-            if p["id"] == page_id:
-                return list(p.get("tags", []))
-        # Not in cache — fall back to individual fetch
+        # Tags must be plain strings, never dicts
+        tags = [str(t) for t in tags]
+
+        # Fetch full page — Wiki.js v2 update needs all fields
         page = self.fetch_page_content(page_id)
         if not page:
-            return []
-        return [t["tag"] for t in page.get("tags", [])]
+            raise WikiClientError(
+                f"Cannot fetch page {page_id} for tag update"
+            )
 
-    def update_page_tags(self, page_id: int, tags: list[str]) -> dict:
-        """Update only the tags on an existing page.
+        # Extract existing tags as strings
+        existing_tags = [t["tag"] for t in page.get("tags", [])]
 
-        Uses the pages.update mutation with only the tags field.
-        """
         query = """
-        mutation ($id: Int!, $tags: [String]) {
+        mutation (
+          $id: Int!,
+          $content: String,
+          $description: String,
+          $isPublished: Boolean,
+          $isPrivate: Boolean,
+          $locale: String,
+          $path: String,
+          $tags: [String],
+          $title: String
+        ) {
           pages {
-            update(id: $id, tags: $tags) {
+            update(
+              id: $id,
+              content: $content,
+              description: $description,
+              isPublished: $isPublished,
+              isPrivate: $isPrivate,
+              locale: $locale,
+              path: $path,
+              tags: $tags,
+              title: $title
+            ) {
               responseResult {
                 succeeded
                 errorCode
@@ -388,4 +424,38 @@ class WikiClient:
           }
         }
         """
-        return self.graphql_request(query, {"id": page_id, "tags": tags})
+        variables = {
+            "id": page_id,
+            "content": page.get("content", ""),
+            "description": page.get("description", ""),
+            "isPublished": page.get("isPublished", True),
+            "isPrivate": page.get("isPrivate", False),
+            "locale": page.get("locale", "en"),
+            "path": page.get("path", ""),
+            "tags": tags,
+            "title": page.get("title", ""),
+        }
+
+        logger.debug(
+            "update_page_tags: page_id=%d, old_tags=%s, new_tags=%s",
+            page_id, existing_tags, tags,
+        )
+        logger.debug("update_page_tags mutation variables: %s", json.dumps(
+            {k: v for k, v in variables.items() if k != "content"},
+            indent=2,
+        ))
+
+        result = self.graphql_request(query, variables)
+
+        resp = (
+            result.get("data", {})
+            .get("pages", {})
+            .get("update", {})
+            .get("responseResult", {})
+        )
+        logger.debug(
+            "update_page_tags response: succeeded=%s, errorCode=%s, message=%s",
+            resp.get("succeeded"), resp.get("errorCode"), resp.get("message"),
+        )
+
+        return result
