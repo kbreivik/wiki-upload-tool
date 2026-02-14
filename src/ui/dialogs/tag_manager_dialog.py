@@ -404,6 +404,19 @@ class TagManagerDialog(QDialog):
         self._apply_btn.setEnabled(len(pages) > 0)
         self._status_label.setText(f"Loaded {len(pages)} page(s)")
 
+        # Collect tags from the loaded pages (same data the table displays)
+        page_tags: set[str] = set()
+        for page in pages:
+            page_tags.update(page.get("tags", []))
+
+        # Merge with wiki-wide tags for the Add section
+        all_tags = sorted(set(self._wiki_tags) | page_tags)
+        logger.debug(
+            "_on_pages_loaded: %d pages, page_tags=%s, wiki_tags=%s, merged=%s",
+            len(pages), sorted(page_tags), self._wiki_tags, all_tags,
+        )
+        self._add_section.set_tags(all_tags)
+
         if not pages:
             QMessageBox.information(
                 self, "No Pages", "No pages found under this path."
@@ -430,12 +443,16 @@ class TagManagerDialog(QDialog):
     # ── Page selection changed ──────────────────────────────────
 
     def _on_page_selection_changed(self) -> None:
-        """Update remove tags section based on selected pages."""
+        """Update remove tags section based on checked pages."""
         checked = self._model.get_checked_pages()
-        # Collect all tags from selected pages
+        # Collect all tags from checked pages for the Remove section
         all_tags: set[str] = set()
         for page in checked:
             all_tags.update(page.get("tags", []))
+        logger.debug(
+            "_on_page_selection_changed: %d checked pages, remove_tags=%s",
+            len(checked), sorted(all_tags),
+        )
         self._remove_section.set_tags(sorted(all_tags))
         self._update_preview()
 
