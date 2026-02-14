@@ -79,7 +79,7 @@ class FileTableModel(QAbstractTableModel):
     def flags(self, index: QModelIndex) -> Qt.ItemFlag:
         base = super().flags(index)
         if index.column() == 0:
-            return base | Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEditable
+            return base | Qt.ItemFlag.ItemIsUserCheckable
         return base
 
     def headerData(
@@ -107,11 +107,22 @@ class FileTableView(QTableView):
         self.setSelectionBehavior(QTableView.SelectionBehavior.SelectRows)
         self.setAlternatingRowColors(True)
         self.verticalHeader().setVisible(False)
+        self.clicked.connect(self._on_clicked)
 
         header = self.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+
+    def _on_clicked(self, index: QModelIndex) -> None:
+        if index.column() == 0:
+            current = self._model.data(index, Qt.ItemDataRole.CheckStateRole)
+            new_state = (
+                Qt.CheckState.Unchecked
+                if current == Qt.CheckState.Checked
+                else Qt.CheckState.Checked
+            )
+            self._model.setData(index, new_state, Qt.ItemDataRole.CheckStateRole)
 
     @property
     def file_model(self) -> FileTableModel:

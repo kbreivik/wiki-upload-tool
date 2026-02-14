@@ -129,7 +129,7 @@ class _PageTagModel(QAbstractTableModel):
     def flags(self, index: QModelIndex) -> Qt.ItemFlag:
         base = super().flags(index)
         if index.column() == 0:
-            return base | Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEditable
+            return base | Qt.ItemFlag.ItemIsUserCheckable
         return base
 
     def get_checked_pages(self) -> list[dict]:
@@ -278,6 +278,7 @@ class TagManagerDialog(QDialog):
             0, QHeaderView.ResizeMode.Stretch
         )
         self._table.verticalHeader().setVisible(False)
+        self._table.clicked.connect(self._on_table_clicked)
 
         # Connect model changes to update remove section and preview
         self._model.dataChanged.connect(self._on_page_selection_changed)
@@ -412,6 +413,19 @@ class TagManagerDialog(QDialog):
         self._load_btn.setEnabled(True)
         self._status_label.setText("Load failed")
         QMessageBox.warning(self, "Load Error", message)
+
+    # ── Table click → toggle checkbox ─────────────────────────
+
+    def _on_table_clicked(self, index: QModelIndex) -> None:
+        if index.column() == 0:
+            model = self._model
+            current = model.data(index, Qt.ItemDataRole.CheckStateRole)
+            new_state = (
+                Qt.CheckState.Unchecked
+                if current == Qt.CheckState.Checked
+                else Qt.CheckState.Checked
+            )
+            model.setData(index, new_state, Qt.ItemDataRole.CheckStateRole)
 
     # ── Page selection changed ──────────────────────────────────
 
