@@ -131,6 +131,7 @@ class _PageMoveWorkerBase(QThread):
     error = Signal(str)
 
     _include_folder_name: bool = True
+    _success_status: str = "archived"
     _label: str = "operation"
 
     def __init__(
@@ -176,11 +177,12 @@ class _PageMoveWorkerBase(QThread):
                     self._include_folder_name,
                 )
                 page_result = _move_single_page(
-                    self._client, page, new_path, self._locale
+                    self._client, page, new_path, self._locale,
+                    success_status=self._success_status,
                 )
                 result.pages.append(page_result)
 
-                if page_result.status == "archived":
+                if page_result.status != "failed":
                     result.archived += 1
                 else:
                     result.failed += 1
@@ -205,12 +207,14 @@ class ArchiveWorker(_PageMoveWorkerBase):
     """Background thread for archiving wiki pages (always includes folder name)."""
 
     _include_folder_name = True
+    _success_status = "archived"
     _label = "archive"
 
 
 class MoveWorker(_PageMoveWorkerBase):
     """Background thread for moving wiki pages."""
 
+    _success_status = "moved"
     _label = "move"
 
     def __init__(

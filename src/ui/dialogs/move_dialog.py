@@ -88,7 +88,7 @@ class _PreviewModel(QAbstractTableModel):
             return self._rows[row][col]
         if role == Qt.ItemDataRole.ForegroundRole and col == 2:
             status = self._rows[row][2]
-            if status == "archived":
+            if status in ("archived", "moved"):
                 return QColor(0, 140, 0)
             elif status == "failed":
                 return QColor(200, 0, 0)
@@ -170,7 +170,7 @@ class MoveDialog(QDialog):
         self._include_folder_cb = QCheckBox(
             "Include source folder name in destination"
         )
-        self._include_folder_cb.setChecked(True)
+        self._include_folder_cb.setChecked(False)
         self._include_folder_cb.toggled.connect(self._refresh_preview)
         layout.addWidget(self._include_folder_cb)
 
@@ -403,7 +403,7 @@ class MoveDialog(QDialog):
                 self._model.update_status(i, status)
                 break
 
-        if status == "archived":
+        if status == "moved":
             if message:
                 logger.warning("  %s → %s [%s]", old_path, new_path, message)
             else:

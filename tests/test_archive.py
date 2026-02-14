@@ -393,6 +393,7 @@ class TestMovePages:
         )
 
         assert result.archived == 2
+        assert all(p.status == "moved" for p in result.pages)
         dest_paths = {p.new_path for p in result.pages}
         assert "Target/Docs" in dest_paths
         assert "Target/Docs/Setup" in dest_paths
@@ -410,6 +411,7 @@ class TestMovePages:
         )
 
         assert result.archived == 2
+        assert all(p.status == "moved" for p in result.pages)
         dest_paths = {p.new_path for p in result.pages}
         assert "Target" in dest_paths
         assert "Target/Setup" in dest_paths
@@ -427,5 +429,6 @@ class TestMovePages:
             include_source_folder=True,
         )
 
+        assert all(p.status == "moved" for p in result.pages)
         dest_paths = {p.new_path for p in result.pages}
         assert dest_paths == {"X/Y/B", "X/Y/B/C", "X/Y/B/C/D"}

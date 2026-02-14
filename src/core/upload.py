@@ -306,7 +306,7 @@ class ArchivePageResult:
     old_path: str
     new_path: str
     title: str
-    status: str  # "archived", "failed"
+    status: str  # "archived", "moved", or "failed"
     message: str = ""
 
 
@@ -380,10 +380,12 @@ def _move_single_page(
     page: dict,
     new_path: str,
     locale: str,
+    success_status: str = "archived",
 ) -> ArchivePageResult:
     """Copy a page to *new_path*, tag it ``"archived"``, then delete the original.
 
-    Used by both archive and move operations.
+    Used by both archive and move operations.  *success_status* controls
+    the status string on success (``"archived"`` or ``"moved"``).
     """
     old_path = page["path"]
     title = page.get("title", old_path)
@@ -445,8 +447,8 @@ def _move_single_page(
     except WikiClientError as e:
         return ArchivePageResult(
             old_path=old_path, new_path=new_path, title=title,
-            status="archived",
-            message=f"Archived but could not delete original: {e}",
+            status=success_status,
+            message=f"Copied but could not delete original: {e}",
         )
 
     del_resp = (
@@ -458,14 +460,14 @@ def _move_single_page(
     if del_resp.get("succeeded"):
         return ArchivePageResult(
             old_path=old_path, new_path=new_path, title=title,
-            status="archived",
+            status=success_status,
         )
     else:
         msg = del_resp.get("message", "unknown error")
         return ArchivePageResult(
             old_path=old_path, new_path=new_path, title=title,
-            status="archived",
-            message=f"Archived but delete failed: {msg}",
+            status=success_status,
+            message=f"Copied but delete failed: {msg}",
         )
 
 
@@ -496,6 +498,7 @@ def archive_pages(
     return _execute_page_moves(
         client, pages, source_path, archive_root, locale,
         include_folder_name=True,
+        success_status="archived",
         progress_callback=progress_callback,
     )
 
@@ -526,6 +529,7 @@ def move_pages(
     return _execute_page_moves(
         client, pages, source_path, dest_path, locale,
         include_folder_name=include_source_folder,
+        success_status="moved",
         progress_callback=progress_callback,
     )
 
@@ -537,6 +541,7 @@ def _execute_page_moves(
     dest_root: str,
     locale: str,
     include_folder_name: bool,
+    success_status: str = "archived",
     progress_callback: ArchiveProgressCallback | None = None,
 ) -> ArchiveResult:
     """Shared implementation for archive and move operations."""
@@ -548,17 +553,19 @@ def _execute_page_moves(
                 progress_callback(i, len(pages), page)
             except StopIteration:
                 logger.info(
-                    "Move cancelled at page %d/%d", i, len(pages)
+                    "Operation cancelled at page %d/%d", i, len(pages)
                 )
                 break
 
         new_path = compute_dest_path(
             page["path"], source_path, dest_root, include_folder_name
         )
-        page_result = _move_single_page(client, page, new_path, locale)
+        page_result = _move_single_page(
+            client, page, new_path, locale, success_status=success_status
+        )
         result.pages.append(page_result)
 
-        if page_result.status == "archived":
+        if page_result.status != "failed":
             result.archived += 1
         else:
             result.failed += 1
