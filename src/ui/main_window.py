@@ -36,6 +36,7 @@ from src.ui.widgets.connection_indicator import ConnectionIndicator
 from src.ui.widgets.wiki_path_picker import WikiPathPickerDialog
 from src.ui.widgets.file_table import FileTableView
 from src.ui.widgets.log_viewer import LogHandler, LogViewer
+from src.ui.widgets.chip_editor import ChipEditor
 from src.ui.widgets.tag_editor import TagEditor
 from src.ui.workers import TestConnectionWorker, UploadWorker
 
@@ -51,7 +52,6 @@ class MainWindow(QMainWindow):
         self._upload_worker: UploadWorker | None = None
         self._test_worker: TestConnectionWorker | None = None
         self._settings = QSettings("wiki-upload-tool", "wiki-upload-tool")
-        self._strip_patterns: list[str] = []
         self._auto_testing = False
 
         self._build_ui()
@@ -181,14 +181,21 @@ class MainWindow(QMainWindow):
 
     def _build_options_group(self) -> QGroupBox:
         group = QGroupBox("Options")
-        layout = QVBoxLayout(group)
+        layout = QFormLayout(group)
 
+        # Row 1: checkbox + tags on the same line
+        tags_row = QHBoxLayout()
         self._update_existing = QCheckBox("Update existing pages")
-        layout.addWidget(self._update_existing)
-
-        layout.addWidget(QLabel("Tags:"))
+        tags_row.addWidget(self._update_existing)
+        tags_row.addSpacing(20)
+        tags_row.addWidget(QLabel("Tags:"))
         self._tag_editor = TagEditor()
-        layout.addWidget(self._tag_editor)
+        tags_row.addWidget(self._tag_editor, stretch=1)
+        layout.addRow(tags_row)
+
+        # Row 2: footer strip patterns
+        self._strip_editor = ChipEditor(placeholder="regex pattern...")
+        layout.addRow("Footer strip:", self._strip_editor)
 
         return group
 
@@ -252,7 +259,8 @@ class MainWindow(QMainWindow):
         else:
             self._locale.setEditText(locale)
         self._index_file.setText(self._settings.value("index_file", "README.md"))
-        self._strip_patterns = self._settings.value("strip_patterns", []) or []
+        strip_patterns = self._settings.value("strip_patterns", []) or []
+        self._strip_editor.set_items(strip_patterns)
 
         # Refresh file table if source dir was restored
         if self._source_dir.text():
@@ -266,7 +274,7 @@ class MainWindow(QMainWindow):
         self._settings.setValue("base_path", self._base_path.text())
         self._settings.setValue("locale", self._locale.currentText())
         self._settings.setValue("index_file", self._index_file.text())
-        self._settings.setValue("strip_patterns", self._strip_patterns)
+        self._settings.setValue("strip_patterns", self._strip_editor.get_items())
 
     def closeEvent(self, event: object) -> None:
         self._save_settings()
@@ -309,7 +317,7 @@ class MainWindow(QMainWindow):
             locale=self._locale.currentText().strip(),
             index_file=self._index_file.text().strip() or "README.md",
             tags=self._tag_editor.get_tags(),
-            strip_footer_patterns=list(self._strip_patterns),
+            strip_footer_patterns=self._strip_editor.get_items(),
             update_existing=self._update_existing.isChecked(),
             dry_run=dry_run,
         )
