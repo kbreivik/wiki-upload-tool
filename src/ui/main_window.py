@@ -495,41 +495,23 @@ class MainWindow(QMainWindow):
                 self._refresh_file_list()
 
     def _on_settings(self) -> None:
-        current_env = {
-            "WIKIJS_URL": self._wiki_url.text().strip(),
-            "WIKIJS_API_KEY": self._api_key.text().strip(),
-            "WIKIJS_BASE_PATH": self._base_path.text().strip(),
-            "WIKIJS_SOURCE_DIR": self._source_dir.text().strip(),
-            "WIKIJS_LOCALE": self._locale.currentText().strip(),
-        }
-        dialog = SettingsDialog(
-            strip_patterns=self._strip_patterns,
-            current_env=current_env,
-            parent=self,
-        )
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            self._strip_patterns = dialog.get_strip_patterns()
+        # Snapshot current connection values to detect changes
+        old_url = self._wiki_url.text().strip()
+        old_key = self._api_key.text().strip()
 
-            # Apply imported .env values to main window fields
-            imported = dialog.get_imported_env()
-            if imported:
-                if "WIKIJS_URL" in imported:
-                    self._wiki_url.setText(imported["WIKIJS_URL"])
-                if "WIKIJS_API_KEY" in imported:
-                    self._api_key.setText(imported["WIKIJS_API_KEY"])
-                if "WIKIJS_BASE_PATH" in imported:
-                    self._base_path.setText(imported["WIKIJS_BASE_PATH"])
-                if "WIKIJS_SOURCE_DIR" in imported:
-                    self._source_dir.setText(imported["WIKIJS_SOURCE_DIR"])
-                if "WIKIJS_LOCALE" in imported:
-                    locale = imported["WIKIJS_LOCALE"]
-                    idx = self._locale.findText(locale)
-                    if idx >= 0:
-                        self._locale.setCurrentIndex(idx)
-                    else:
-                        self._locale.setEditText(locale)
-                self._refresh_file_list()
-                logger.info("Applied imported .env settings")
+        # Save current main window values to QSettings so the dialog sees them
+        self._save_settings()
+
+        dialog = SettingsDialog(parent=self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            # Dialog already wrote to QSettings — reload into main window
+            self._restore_settings()
+
+            # Re-test connection if URL or API key changed
+            new_url = self._wiki_url.text().strip()
+            new_key = self._api_key.text().strip()
+            if (new_url != old_url or new_key != old_key) and new_url and new_key:
+                self._auto_test_connection()
 
     def _on_dry_run(self) -> None:
         config = self._build_config(dry_run=True)

@@ -3,10 +3,13 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import (
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
+    QFormLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -21,38 +24,96 @@ from src.core.config import load_dotenv, update_env_file
 
 logger = logging.getLogger(__name__)
 
+# .env key ↔ QSettings key mapping (CLI-compatible variables only)
+_ENV_MAP: dict[str, str] = {
+    "WIKIJS_URL": "wiki_url",
+    "WIKIJS_API_KEY": "api_key",
+    "WIKIJS_BASE_PATH": "base_path",
+    "WIKIJS_SOURCE_DIR": "source_dir",
+    "WIKIJS_LOCALE": "locale",
+}
+
 
 class SettingsDialog(QDialog):
-    """Settings dialog for infrequently-changed options and .env management.
+    """Settings dialog with all GUI fields and .env import/export.
+
+    All fields load from QSettings on open. Save writes to QSettings.
 
     Args:
-        strip_patterns: Current list of footer-stripping regex patterns.
-        current_env: Dict of current env-style settings for .env export.
         parent: Parent widget.
     """
 
-    def __init__(
-        self,
-        strip_patterns: list[str] | None = None,
-        current_env: dict[str, str] | None = None,
-        parent: object = None,
-    ) -> None:
+    def __init__(self, parent: object = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Settings")
-        self.setMinimumWidth(500)
-        self._current_env = current_env or {}
-        self._imported_env: dict[str, str] | None = None
+        self.setMinimumWidth(520)
+        self._settings = QSettings("wiki-upload-tool", "wiki-upload-tool")
 
         self._build_ui()
-
-        if strip_patterns:
-            for p in strip_patterns:
-                self._pattern_list.addItem(p)
+        self._load_from_settings()
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
 
-        # ── Strip footer patterns ──────────────────────────────────
+        # ── Connection ──────────────────────────────────────────
+        conn_group = QGroupBox("Connection")
+        conn_form = QFormLayout(conn_group)
+
+        self._wiki_url = QLineEdit()
+        self._wiki_url.setPlaceholderText("https://wiki.example.com")
+        conn_form.addRow("Wiki URL:", self._wiki_url)
+
+        self._api_key = QLineEdit()
+        self._api_key.setEchoMode(QLineEdit.EchoMode.Password)
+        self._api_key.setPlaceholderText("Bearer API key")
+        conn_form.addRow("API Key:", self._api_key)
+
+        layout.addWidget(conn_group)
+
+        # ── Paths ───────────────────────────────────────────────
+        paths_group = QGroupBox("Paths")
+        paths_form = QFormLayout(paths_group)
+
+        source_row = QHBoxLayout()
+        self._source_dir = QLineEdit()
+        self._source_dir.setPlaceholderText("Path to folder with .md files")
+        self._browse_btn = QPushButton("Browse...")
+        self._browse_btn.setFixedWidth(80)
+        self._browse_btn.clicked.connect(self._on_browse)
+        source_row.addWidget(self._source_dir)
+        source_row.addWidget(self._browse_btn)
+        paths_form.addRow("Source Dir:", source_row)
+
+        self._base_path = QLineEdit()
+        self._base_path.setPlaceholderText("Documentation/MyProject")
+        paths_form.addRow("Base Path:", self._base_path)
+
+        self._locale = QComboBox()
+        self._locale.setEditable(True)
+        self._locale.addItems(["en", "nb", "de", "fr", "es"])
+        paths_form.addRow("Locale:", self._locale)
+
+        self._index_file = QLineEdit()
+        self._index_file.setPlaceholderText("README.md")
+        paths_form.addRow("Index File:", self._index_file)
+
+        layout.addWidget(paths_group)
+
+        # ── Defaults ────────────────────────────────────────────
+        defaults_group = QGroupBox("Defaults")
+        defaults_form = QFormLayout(defaults_group)
+
+        self._archive_root = QLineEdit()
+        self._archive_root.setPlaceholderText("e.g. Dokumentasjon/Arkiv")
+        defaults_form.addRow("Archive Root:", self._archive_root)
+
+        self._move_dest = QLineEdit()
+        self._move_dest.setPlaceholderText("e.g. Projects/Saved")
+        defaults_form.addRow("Move Dest:", self._move_dest)
+
+        layout.addWidget(defaults_group)
+
+        # ── Strip footer patterns ───────────────────────────────
         pattern_group = QGroupBox("Strip Footer Patterns")
         pattern_layout = QVBoxLayout(pattern_group)
         pattern_layout.addWidget(QLabel(
@@ -71,7 +132,7 @@ class SettingsDialog(QDialog):
         pattern_layout.addLayout(input_row)
 
         self._pattern_list = QListWidget()
-        self._pattern_list.setMaximumHeight(100)
+        self._pattern_list.setMaximumHeight(80)
         pattern_layout.addWidget(self._pattern_list)
 
         self._remove_pattern_btn = QPushButton("Remove Selected")
@@ -80,12 +141,9 @@ class SettingsDialog(QDialog):
 
         layout.addWidget(pattern_group)
 
-        # ── .env management ────────────────────────────────────────
+        # ── .env File ───────────────────────────────────────────
         env_group = QGroupBox(".env File")
         env_layout = QVBoxLayout(env_group)
-        env_layout.addWidget(QLabel(
-            "Import settings from or export current settings to a .env file."
-        ))
 
         btn_row = QHBoxLayout()
         self._import_btn = QPushButton("Import from .env...")
@@ -102,17 +160,66 @@ class SettingsDialog(QDialog):
 
         layout.addWidget(env_group)
 
-        # ── Dialog buttons ─────────────────────────────────────────
-        layout.addStretch()
+        # ── Dialog buttons ──────────────────────────────────────
         self._buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok
+            QDialogButtonBox.StandardButton.Save
             | QDialogButtonBox.StandardButton.Cancel
         )
-        self._buttons.accepted.connect(self.accept)
+        self._buttons.accepted.connect(self._on_save)
         self._buttons.rejected.connect(self.reject)
         layout.addWidget(self._buttons)
 
-    # ── Pattern list actions ───────────────────────────────────────
+    # ── Load / Save ─────────────────────────────────────────────
+
+    def _load_from_settings(self) -> None:
+        """Populate all fields from QSettings."""
+        self._wiki_url.setText(self._settings.value("wiki_url", "", str))
+        self._api_key.setText(self._settings.value("api_key", "", str))
+        self._source_dir.setText(self._settings.value("source_dir", "", str))
+        self._base_path.setText(self._settings.value("base_path", "", str))
+
+        locale = self._settings.value("locale", "en", str)
+        idx = self._locale.findText(locale)
+        if idx >= 0:
+            self._locale.setCurrentIndex(idx)
+        else:
+            self._locale.setEditText(locale)
+
+        self._index_file.setText(
+            self._settings.value("index_file", "README.md", str)
+        )
+        self._archive_root.setText(
+            self._settings.value("archive/root_path", "", str)
+        )
+        self._move_dest.setText(
+            self._settings.value("move/dest_path", "", str)
+        )
+
+        patterns = self._settings.value("strip_patterns", []) or []
+        for p in patterns:
+            self._pattern_list.addItem(p)
+
+    def _on_save(self) -> None:
+        """Write all fields to QSettings, then accept."""
+        self._settings.setValue("wiki_url", self._wiki_url.text().strip())
+        self._settings.setValue("api_key", self._api_key.text().strip())
+        self._settings.setValue("source_dir", self._source_dir.text().strip())
+        self._settings.setValue("base_path", self._base_path.text().strip())
+        self._settings.setValue("locale", self._locale.currentText().strip())
+        self._settings.setValue(
+            "index_file",
+            self._index_file.text().strip() or "README.md",
+        )
+        self._settings.setValue(
+            "archive/root_path", self._archive_root.text().strip()
+        )
+        self._settings.setValue(
+            "move/dest_path", self._move_dest.text().strip()
+        )
+        self._settings.setValue("strip_patterns", self._get_strip_patterns())
+        self.accept()
+
+    # ── Pattern list actions ────────────────────────────────────
 
     def _add_pattern(self) -> None:
         pattern = self._pattern_input.text().strip()
@@ -124,18 +231,22 @@ class SettingsDialog(QDialog):
         for item in self._pattern_list.selectedItems():
             self._pattern_list.takeItem(self._pattern_list.row(item))
 
-    def get_strip_patterns(self) -> list[str]:
-        """Return the current list of footer-stripping patterns."""
+    def _get_strip_patterns(self) -> list[str]:
         return [
             self._pattern_list.item(i).text()
             for i in range(self._pattern_list.count())
         ]
 
-    # ── .env import/export ─────────────────────────────────────────
+    # ── Browse ──────────────────────────────────────────────────
 
-    def get_imported_env(self) -> dict[str, str] | None:
-        """Return the imported .env values, or None if nothing was imported."""
-        return self._imported_env
+    def _on_browse(self) -> None:
+        folder = QFileDialog.getExistingDirectory(
+            self, "Select Source Directory", self._source_dir.text()
+        )
+        if folder:
+            self._source_dir.setText(folder)
+
+    # ── .env import/export ──────────────────────────────────────
 
     def _on_import_env(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -147,17 +258,41 @@ class SettingsDialog(QDialog):
         try:
             values = load_dotenv(Path(path))
         except OSError as e:
-            QMessageBox.warning(self, "Import Failed", f"Could not read file:\n{e}")
+            QMessageBox.warning(
+                self, "Import Failed", f"Could not read file:\n{e}"
+            )
             return
 
         if not values:
             self._env_status.setText("No values found in file")
             return
 
-        self._imported_env = values
-        keys = ", ".join(values.keys())
-        self._env_status.setText(f"Imported: {keys}")
-        logger.info("Imported .env from %s: %s", path, keys)
+        count = 0
+        if "WIKIJS_URL" in values:
+            self._wiki_url.setText(values["WIKIJS_URL"])
+            count += 1
+        if "WIKIJS_API_KEY" in values:
+            self._api_key.setText(values["WIKIJS_API_KEY"])
+            count += 1
+        if "WIKIJS_BASE_PATH" in values:
+            self._base_path.setText(values["WIKIJS_BASE_PATH"])
+            count += 1
+        if "WIKIJS_SOURCE_DIR" in values:
+            self._source_dir.setText(values["WIKIJS_SOURCE_DIR"])
+            count += 1
+        if "WIKIJS_LOCALE" in values:
+            locale = values["WIKIJS_LOCALE"]
+            idx = self._locale.findText(locale)
+            if idx >= 0:
+                self._locale.setCurrentIndex(idx)
+            else:
+                self._locale.setEditText(locale)
+            count += 1
+
+        self._env_status.setText(
+            f"Imported {count} setting(s) from .env"
+        )
+        logger.info("Imported %d setting(s) from %s", count, path)
 
     def _on_export_env(self) -> None:
         path, _ = QFileDialog.getSaveFileName(
@@ -166,7 +301,16 @@ class SettingsDialog(QDialog):
         if not path:
             return
 
-        env_values = {k: v for k, v in self._current_env.items() if v}
+        env_values = {
+            "WIKIJS_API_KEY": self._api_key.text().strip(),
+            "WIKIJS_URL": self._wiki_url.text().strip(),
+            "WIKIJS_BASE_PATH": self._base_path.text().strip(),
+            "WIKIJS_SOURCE_DIR": self._source_dir.text().strip(),
+            "WIKIJS_LOCALE": self._locale.currentText().strip(),
+        }
+        # Only export non-empty values
+        env_values = {k: v for k, v in env_values.items() if v}
+
         if not env_values:
             QMessageBox.information(
                 self, "Nothing to Export", "No settings to export."
@@ -176,8 +320,10 @@ class SettingsDialog(QDialog):
         try:
             update_env_file(Path(path), env_values)
         except OSError as e:
-            QMessageBox.warning(self, "Export Failed", f"Could not write file:\n{e}")
+            QMessageBox.warning(
+                self, "Export Failed", f"Could not write file:\n{e}"
+            )
             return
 
-        self._env_status.setText(f"Exported to {Path(path).name}")
+        self._env_status.setText(f"Exported settings to {Path(path).name}")
         logger.info("Exported .env to %s", path)
