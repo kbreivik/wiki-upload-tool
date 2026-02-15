@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import sys
 
+from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import QApplication
 
 from src.ui.main_window import MainWindow
@@ -20,6 +21,10 @@ def main() -> None:
     app = QApplication(sys.argv)
     app.setApplicationName("Wiki.js Upload Tool")
     app.setOrganizationName("wiki-upload-tool")
+
+    # Store settings in a local INI file instead of the Windows Registry
+    # File location: %APPDATA%/wiki-upload-tool/wiki-upload-tool.ini
+    QSettings.setDefaultFormat(QSettings.Format.IniFormat)
 
     window = MainWindow()
     window.show()
