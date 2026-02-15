@@ -25,8 +25,9 @@ uv venv .venv
 .venv\Scripts\activate
 uv pip install -e ".[dev]"
 
-# Install Nuitka (only needed for building the standalone exe)
-uv pip install nuitka
+# Install build tools (only needed for building the standalone exe)
+# .[build] = nuitka, zstandard (onefile compression), ordered-set (build perf)
+uv pip install -e ".[build]"
 ```
 
 To build the standalone executable you also need the **MSVC C/C++ compiler**. Install the Visual Studio Build Tools if you don't have them:
