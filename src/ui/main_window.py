@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 )
 
 from src.core.config import Config
+from src.core.crypto import decrypt_or_plain, encrypt_or_plain
 from src.core.discovery import discover_files, generate_slug, parse_frontmatter
 from src.core.links import build_link_map
 from src.core.upload import UploadResult, process_file
@@ -311,7 +312,13 @@ class MainWindow(QMainWindow):
             self._log_viewer.setVisible(True)
             self._log_toggle_btn.setText("Hide Log")
         self._wiki_url.setText(self._settings.value("wiki_url", ""))
-        self._api_key.setText(self._settings.value("api_key", ""))
+        # Decrypt API key; migrate from legacy plain text if needed
+        encrypted_key = self._settings.value("api_key_encrypted", "")
+        if encrypted_key:
+            self._api_key.setText(decrypt_or_plain(encrypted_key))
+        else:
+            # Migration: read legacy plain text key, will be encrypted on next save
+            self._api_key.setText(self._settings.value("api_key", ""))
         self._source_dir.setText(self._settings.value("source_dir", ""))
         self._base_path.setText(self._settings.value("base_path", ""))
         locale = self._settings.value("locale", "en")
@@ -333,7 +340,8 @@ class MainWindow(QMainWindow):
         self._settings.setValue("main/splitter", self._main_splitter.saveState())
         self._settings.setValue("main/log_visible", self._log_viewer.isVisible())
         self._settings.setValue("wiki_url", self._wiki_url.text())
-        self._settings.setValue("api_key", self._api_key.text())
+        self._settings.setValue("api_key_encrypted", encrypt_or_plain(self._api_key.text()))
+        self._settings.remove("api_key")  # remove legacy plain text key
         self._settings.setValue("source_dir", self._source_dir.text())
         self._settings.setValue("base_path", self._base_path.text())
         self._settings.setValue("locale", self._locale.currentText())

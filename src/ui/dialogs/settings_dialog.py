@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 )
 
 from src.core.config import load_dotenv, update_env_file
+from src.core.crypto import decrypt_or_plain, encrypt_or_plain
 
 logger = logging.getLogger(__name__)
 
@@ -174,7 +175,12 @@ class SettingsDialog(QDialog):
     def _load_from_settings(self) -> None:
         """Populate all fields from QSettings."""
         self._wiki_url.setText(self._settings.value("wiki_url", "", str))
-        self._api_key.setText(self._settings.value("api_key", "", str))
+        # Decrypt API key; migrate from legacy plain text if needed
+        encrypted_key = self._settings.value("api_key_encrypted", "", str)
+        if encrypted_key:
+            self._api_key.setText(decrypt_or_plain(encrypted_key))
+        else:
+            self._api_key.setText(self._settings.value("api_key", "", str))
         self._source_dir.setText(self._settings.value("source_dir", "", str))
         self._base_path.setText(self._settings.value("base_path", "", str))
 
@@ -202,7 +208,8 @@ class SettingsDialog(QDialog):
     def _on_save(self) -> None:
         """Write all fields to QSettings, then accept."""
         self._settings.setValue("wiki_url", self._wiki_url.text().strip())
-        self._settings.setValue("api_key", self._api_key.text().strip())
+        self._settings.setValue("api_key_encrypted", encrypt_or_plain(self._api_key.text().strip()))
+        self._settings.remove("api_key")  # remove legacy plain text key
         self._settings.setValue("source_dir", self._source_dir.text().strip())
         self._settings.setValue("base_path", self._base_path.text().strip())
         self._settings.setValue("locale", self._locale.currentText().strip())
