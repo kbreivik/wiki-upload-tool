@@ -2,16 +2,43 @@
 
 Desktop tool for uploading markdown files to Wiki.js via GraphQL API. Built with PySide6, packaged as a standalone Windows executable with Nuitka.
 
-## Building
+## Requires
 
-Requires: Python 3.12+, MSVC (Visual Studio Build Tools), uv
+- **Python 3.12+**
+- **uv** (Python package manager)
+- **MSVC** (Visual Studio Build Tools — for Nuitka compilation only)
 
-```bash
+### Installing prerequisites with PowerShell
+
+```powershell
+# Install uv
+irm https://astral.sh/uv/install.ps1 | iex
+
+# Install Python 3.12 via uv
+uv python install 3.12
+
+# Create venv and install project + dev dependencies
 uv venv .venv
 .venv\Scripts\activate
 uv pip install -e ".[dev]"
+
+# Install Nuitka (only needed for building the standalone exe)
 uv pip install nuitka
 ```
+
+To build the standalone executable you also need the **MSVC C/C++ compiler**. Install the Visual Studio Build Tools if you don't have them:
+
+```powershell
+# Download and run the Visual Studio Build Tools installer
+irm https://aka.ms/vs/17/release/vs_BuildTools.exe -OutFile vs_BuildTools.exe
+Start-Process -Wait -FilePath .\vs_BuildTools.exe -ArgumentList `
+    "--quiet", "--wait", "--norestart", `
+    "--add", "Microsoft.VisualStudio.Workload.VCTools", `
+    "--includeRecommended"
+Remove-Item .\vs_BuildTools.exe
+```
+
+## Building
 
 ### Build Modes
 
