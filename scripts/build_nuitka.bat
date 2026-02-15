@@ -22,6 +22,7 @@ if "%1"=="folder" (
         --output-dir=dist\folder ^
         --output-filename=wiki-upload-tool.exe ^
         src/main.py
+    copy README-large.md dist\folder\main.dist\README.md >nul 2>&1
     echo.
     echo Build complete: dist\folder\main.dist\
     echo Distribute the entire folder. Run wiki-upload-tool.exe inside it.
@@ -32,6 +33,7 @@ if "%1"=="folder" (
         --output-dir=dist ^
         --output-filename=wiki-upload-tool.exe ^
         src/main.py
+    copy README-large.md dist\README.md >nul 2>&1
     echo.
     echo Build complete: dist\wiki-upload-tool.exe
     echo NOTE: May trigger AV. See README for exclusion instructions.
