@@ -53,6 +53,10 @@ class ConnectionIndicator(QWidget):
         self._dot.set_color(QColor(200, 200, 0))
         self._label.setText("Testing...")
 
+    def set_unstable(self) -> None:
+        self._dot.set_color(QColor(255, 165, 0))
+        self._label.setText("Connection unstable")
+
     def set_idle(self) -> None:
         self._dot.set_color(QColor(128, 128, 128))
         self._label.setText("Not connected")

@@ -53,10 +53,14 @@ class MainWindow(QMainWindow):
 
         self._upload_worker: UploadWorker | None = None
         self._test_worker: TestConnectionWorker | None = None
+        self._health_worker: TestConnectionWorker | None = None
         self._tags_worker: FetchTagsWorker | None = None
         self._wiki_tags_cache: list[str] | None = None
+        self._last_upload_result: UploadResult | None = None
+        self._last_upload_pages: list[dict] | None = None
         self._settings = QSettings("wiki-upload-tool", "wiki-upload-tool")
         self._auto_testing = False
+        self._connected = False
 
         self._build_ui()
         self._setup_logging()
@@ -67,6 +71,11 @@ class MainWindow(QMainWindow):
         self._preview_timer.setSingleShot(True)
         self._preview_timer.setInterval(200)
         self._preview_timer.timeout.connect(self._update_preview)
+
+        # Connection health monitor (60s periodic ping)
+        self._health_timer = QTimer()
+        self._health_timer.setInterval(60_000)
+        self._health_timer.timeout.connect(self._health_check)
 
         # Auto-test connection after the window renders
         QTimer.singleShot(500, self._auto_test_connection)
@@ -216,6 +225,12 @@ class MainWindow(QMainWindow):
         self._cancel_btn.setEnabled(False)
         self._cancel_btn.clicked.connect(self._on_cancel)
         btn_row.addWidget(self._cancel_btn)
+
+        self._retry_btn = QPushButton("Retry Failed")
+        self._retry_btn.setEnabled(False)
+        self._retry_btn.setVisible(False)
+        self._retry_btn.clicked.connect(self._on_retry_failed)
+        btn_row.addWidget(self._retry_btn)
 
         btn_row.addSpacing(20)
 
@@ -506,6 +521,7 @@ class MainWindow(QMainWindow):
 
     def _on_test_success(self) -> None:
         self._auto_testing = False
+        self._connected = True
         self._connection_indicator.set_connected()
         self._test_btn.setEnabled(True)
         self._pick_path_btn.setEnabled(True)
@@ -517,10 +533,14 @@ class MainWindow(QMainWindow):
         self._api_key.setStyleSheet("")
         # Fetch wiki tags after successful connection
         self._fetch_wiki_tags()
+        # Start health monitoring
+        self._health_timer.start()
 
     def _on_test_failure(self, message: str) -> None:
         was_auto = self._auto_testing
         self._auto_testing = False
+        self._connected = False
+        self._health_timer.stop()
         self._test_btn.setEnabled(True)
         self._pick_path_btn.setEnabled(False)
         self._archive_btn.setEnabled(False)
@@ -709,14 +729,18 @@ class MainWindow(QMainWindow):
             pages.append(page)
 
         # Start upload worker
+        self._last_upload_pages = pages
         client = WikiClient(config.wiki_url, config.api_key)
         self._upload_worker = UploadWorker(client, pages, config)
         self._upload_worker.progress.connect(self._on_upload_progress)
         self._upload_worker.page_done.connect(self._on_page_done)
         self._upload_worker.finished_upload.connect(self._on_upload_finished)
+        self._upload_worker.batch_stopped.connect(self._on_batch_stopped)
         self._upload_worker.error.connect(self._on_upload_error)
 
         self._set_uploading(True)
+        self._retry_btn.setVisible(False)
+        self._retry_btn.setEnabled(False)
         self._progress_bar.setMaximum(len(pages))
         self._progress_bar.setValue(0)
         logger.info("Starting upload of %d page(s)...", len(pages))
@@ -755,6 +779,10 @@ class MainWindow(QMainWindow):
                 logger.error("  FAILED: %s — %s", filename, message)
 
     def _on_upload_finished(self, result: UploadResult) -> None:
+        self._last_upload_result = result
+        if result.stopped_early:
+            # Don't hide progress bar — _on_batch_stopped handles UI
+            return
         self._set_uploading(False)
         self._progress_bar.setValue(result.total)
 
@@ -785,3 +813,101 @@ class MainWindow(QMainWindow):
         self._set_uploading(False)
         logger.critical("Upload error: %s", message)
         QMessageBox.critical(self, "Upload Error", message)
+
+    def _on_batch_stopped(self, reason: str) -> None:
+        """Handle batch stop due to consecutive connection failures."""
+        # Keep progress bar visible at current position (don't hide)
+        self._upload_btn.setEnabled(True)
+        self._dry_run_btn.setEnabled(True)
+        self._cancel_btn.setEnabled(False)
+        # Show Retry Failed button
+        self._retry_btn.setVisible(True)
+        self._retry_btn.setEnabled(True)
+        self._connection_indicator.set_unstable()
+        QMessageBox.warning(
+            self,
+            "Connection Lost",
+            f"{reason}\n\nUse 'Retry Failed' to resume.",
+        )
+
+    def _on_retry_failed(self) -> None:
+        """Re-run upload for only the pages that failed."""
+        if not self._last_upload_result or not self._last_upload_pages:
+            return
+
+        config = self._build_config()
+        if not config.wiki_url or not config.api_key:
+            QMessageBox.warning(
+                self, "Missing Config", "Wiki URL and API key are required."
+            )
+            return
+
+        # Collect filenames of failed pages
+        failed_filenames = {
+            p.filename
+            for p in self._last_upload_result.pages
+            if p.status == "failed"
+        }
+        if not failed_filenames:
+            logger.info("No failed pages to retry")
+            return
+
+        # Filter to only the failed pages from the original list
+        retry_pages = [
+            p for p in self._last_upload_pages
+            if p.get("filename") in failed_filenames
+        ]
+        if not retry_pages:
+            return
+
+        # Hide retry button, start upload
+        self._retry_btn.setVisible(False)
+        self._retry_btn.setEnabled(False)
+
+        client = WikiClient(config.wiki_url, config.api_key)
+        self._upload_worker = UploadWorker(client, retry_pages, config)
+        self._upload_worker.progress.connect(self._on_upload_progress)
+        self._upload_worker.page_done.connect(self._on_page_done)
+        self._upload_worker.finished_upload.connect(self._on_upload_finished)
+        self._upload_worker.batch_stopped.connect(self._on_batch_stopped)
+        self._upload_worker.error.connect(self._on_upload_error)
+
+        self._set_uploading(True)
+        self._progress_bar.setMaximum(len(retry_pages))
+        self._progress_bar.setValue(0)
+        logger.info("Retrying %d failed page(s)...", len(retry_pages))
+        self._upload_worker.start()
+
+    # ── Connection health monitoring ──────────────────────────
+
+    def _health_check(self) -> None:
+        """Periodic connection health check (called every 60s)."""
+        if not self._connected:
+            return
+        url = self._wiki_url.text().strip().rstrip("/")
+        key = self._api_key.text().strip()
+        if not url or not key:
+            return
+
+        self._health_worker = TestConnectionWorker(url, key)
+        self._health_worker.success.connect(self._on_health_success)
+        self._health_worker.failure.connect(self._on_health_failure)
+        self._health_worker.start()
+
+    def _on_health_success(self) -> None:
+        """Health check passed — ensure indicator shows connected."""
+        if self._connected:
+            self._connection_indicator.set_connected()
+
+    def _on_health_failure(self, message: str) -> None:
+        """Health check failed — update indicator."""
+        if "401" in message or "403" in message:
+            # Auth failure — mark disconnected
+            self._connected = False
+            self._health_timer.stop()
+            self._connection_indicator.set_disconnected("Auth failed")
+            logger.warning("Health check: authentication failed")
+        else:
+            # Transient connection issue
+            self._connection_indicator.set_unstable()
+            logger.warning("Health check failed: %s", message)

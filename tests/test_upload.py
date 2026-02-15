@@ -6,12 +6,17 @@ from unittest.mock import MagicMock
 from src.core.config import Config
 from src.core.upload import (
     PageResult,
+    TagOperation,
+    TagResult,
     UploadResult,
+    _MAX_CONSECUTIVE_FAILURES,
+    apply_tag_changes,
     build_tree,
     preview_placement,
     process_file,
     upload_pages,
 )
+from src.core.wiki_client import WikiClientError
 
 
 class TestProcessFile:
@@ -247,6 +252,143 @@ class TestPreviewPlacement:
         assert tree["Docs"]["_children"]["page"]["_label"] == "[EXISTS]"
 
 
+class TestConsecutiveFailureDetection:
+    """Test that batch operations stop after consecutive connection failures."""
+
+    def _make_failing_client(self, fail_count: int) -> MagicMock:
+        """Client that fails with connection errors for the first N calls."""
+        client = MagicMock()
+        call_count = {"n": 0}
+
+        def check_page(*args: object, **kwargs: object) -> None:
+            call_count["n"] += 1
+            if call_count["n"] <= fail_count:
+                raise WikiClientError(
+                    "Connection error: timeout",
+                    is_connection_error=True,
+                )
+            return None  # page doesn't exist
+
+        client.check_page_exists.side_effect = check_page
+        client.create_page.return_value = {
+            "data": {
+                "pages": {
+                    "create": {
+                        "responseResult": {"succeeded": True},
+                        "page": {"id": 100, "path": "test", "title": "T"},
+                    }
+                }
+            }
+        }
+        return client
+
+    def test_stops_after_consecutive_connection_failures(self) -> None:
+        client = self._make_failing_client(fail_count=10)
+        config = Config(locale="en")
+        pages = [
+            {"filename": f"p{i}.md", "path": f"Docs/p{i}", "title": f"P{i}", "description": "", "content": "B"}
+            for i in range(5)
+        ]
+
+        result = upload_pages(client, pages, config)
+        assert result.stopped_early is True
+        assert result.failed == _MAX_CONSECUTIVE_FAILURES
+        assert len(result.pages) == _MAX_CONSECUTIVE_FAILURES
+        assert "Connection lost" in result.stop_reason
+
+    def test_non_consecutive_failures_continue(self) -> None:
+        """If failures are not consecutive (success in between), batch continues."""
+        client = MagicMock()
+        call_num = {"n": 0}
+
+        def check_page(*args: object, **kwargs: object) -> dict | None:
+            call_num["n"] += 1
+            # Fail on calls 1, 3 (not consecutive)
+            if call_num["n"] in (1, 3):
+                raise WikiClientError(
+                    "Connection error: timeout",
+                    is_connection_error=True,
+                )
+            return None
+
+        client.check_page_exists.side_effect = check_page
+        client.create_page.return_value = {
+            "data": {
+                "pages": {
+                    "create": {
+                        "responseResult": {"succeeded": True},
+                        "page": {"id": 100, "path": "test", "title": "T"},
+                    }
+                }
+            }
+        }
+        config = Config(locale="en")
+        pages = [
+            {"filename": f"p{i}.md", "path": f"Docs/p{i}", "title": f"P{i}", "description": "", "content": "B"}
+            for i in range(4)
+        ]
+
+        result = upload_pages(client, pages, config)
+        assert result.stopped_early is False
+        assert result.failed == 2
+        assert result.created == 2
+
+    def test_partial_results_returned(self) -> None:
+        """When stopped early, partial results are available."""
+        client = self._make_failing_client(fail_count=10)
+        config = Config(locale="en")
+        pages = [
+            {"filename": f"p{i}.md", "path": f"Docs/p{i}", "title": f"P{i}", "description": "", "content": "B"}
+            for i in range(6)
+        ]
+
+        result = upload_pages(client, pages, config)
+        # Should have processed exactly _MAX_CONSECUTIVE_FAILURES pages
+        assert len(result.pages) == _MAX_CONSECUTIVE_FAILURES
+        assert all(p.status == "failed" for p in result.pages)
+        assert all(p.is_connection_error for p in result.pages)
+
+    def test_api_errors_dont_trigger_stop(self) -> None:
+        """Non-connection failures (API errors) reset the counter."""
+        client = MagicMock()
+        # All check_page calls fail, but NOT with connection errors
+        client.check_page_exists.side_effect = WikiClientError(
+            "HTTP 500: Internal Server Error",
+            status_code=500,
+            is_connection_error=False,
+        )
+        config = Config(locale="en")
+        pages = [
+            {"filename": f"p{i}.md", "path": f"Docs/p{i}", "title": f"P{i}", "description": "", "content": "B"}
+            for i in range(5)
+        ]
+
+        result = upload_pages(client, pages, config)
+        assert result.stopped_early is False
+        assert result.failed == 5
+        assert len(result.pages) == 5
+
+
+class TestTagChangesConsecutiveFailure:
+    def test_stops_after_consecutive_connection_failures(self) -> None:
+        client = MagicMock()
+        client.update_page_tags.side_effect = WikiClientError(
+            "Connection error: timeout", is_connection_error=True
+        )
+        ops = [
+            TagOperation(
+                page_id=i, page_path=f"Docs/p{i}", page_title=f"P{i}",
+                current_tags=["old"], new_tags=["new"],
+            )
+            for i in range(5)
+        ]
+
+        result = apply_tag_changes(client, ops)
+        assert result.stopped_early is True
+        assert result.failed == _MAX_CONSECUTIVE_FAILURES
+        assert "Connection lost" in result.stop_reason
+
+
 class TestUploadResult:
     def test_total_property(self) -> None:
         r = UploadResult(created=2, updated=1, skipped=3, failed=1)
@@ -256,3 +398,8 @@ class TestUploadResult:
         r = UploadResult()
         assert r.total == 0
         assert r.pages == []
+
+    def test_stopped_early_defaults(self) -> None:
+        r = UploadResult()
+        assert r.stopped_early is False
+        assert r.stop_reason == ""

@@ -2,18 +2,29 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 import urllib.error
 import urllib.request
 
 logger = logging.getLogger(__name__)
 
+_MAX_RETRIES = 3
+_RETRY_DELAY = 2  # seconds
+
 
 class WikiClientError(Exception):
     """Base exception for WikiClient errors."""
 
-    def __init__(self, message: str, status_code: int | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        status_code: int | None = None,
+        *,
+        is_connection_error: bool = False,
+    ) -> None:
         super().__init__(message)
         self.status_code = status_code
+        self.is_connection_error = is_connection_error
 
 
 class WikiClient:
@@ -29,6 +40,10 @@ class WikiClient:
         self, query: str, variables: dict | None = None
     ) -> dict:
         """Execute a GraphQL request against Wiki.js.
+
+        Retries up to ``_MAX_RETRIES`` times on connection errors with a
+        ``_RETRY_DELAY`` second delay between attempts.  HTTP errors (auth
+        failures, API errors) are never retried.
 
         Returns:
             Parsed JSON response dict.
@@ -52,18 +67,48 @@ class WikiClient:
             method="POST",
         )
 
-        try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                return json.loads(resp.read().decode("utf-8"))
-        except urllib.error.HTTPError as e:
-            body = e.read().decode("utf-8") if e.fp else ""
-            logger.error("HTTP %d: %s", e.code, body[:500])
-            raise WikiClientError(
-                f"HTTP {e.code}: {body[:500]}", status_code=e.code
-            ) from e
-        except urllib.error.URLError as e:
-            logger.error("Connection error: %s", e.reason)
-            raise WikiClientError(f"Connection error: {e.reason}") from e
+        last_error: Exception | None = None
+        for attempt in range(1, _MAX_RETRIES + 1):
+            try:
+                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                    return json.loads(resp.read().decode("utf-8"))
+            except urllib.error.HTTPError as e:
+                # Auth / API errors — never retry
+                body = e.read().decode("utf-8") if e.fp else ""
+                logger.error("HTTP %d: %s", e.code, body[:500])
+                raise WikiClientError(
+                    f"HTTP {e.code}: {body[:500]}", status_code=e.code
+                ) from e
+            except (urllib.error.URLError, OSError) as e:
+                # Connection errors — retry with delay
+                reason = str(e.reason) if hasattr(e, "reason") else str(e)
+                last_error = e
+                if attempt < _MAX_RETRIES:
+                    logger.warning(
+                        "Connection error (attempt %d/%d): %s — retrying in %ds",
+                        attempt,
+                        _MAX_RETRIES,
+                        reason,
+                        _RETRY_DELAY,
+                    )
+                    time.sleep(_RETRY_DELAY)
+                else:
+                    logger.error(
+                        "Connection error (attempt %d/%d): %s — giving up",
+                        attempt,
+                        _MAX_RETRIES,
+                        reason,
+                    )
+
+        # All retries exhausted
+        reason = (
+            str(last_error.reason)
+            if hasattr(last_error, "reason")
+            else str(last_error)
+        )
+        raise WikiClientError(
+            f"Connection error: {reason}", is_connection_error=True
+        ) from last_error
 
     def test_connection(self) -> bool:
         """Test API connectivity with a lightweight query.

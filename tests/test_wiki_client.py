@@ -121,3 +121,81 @@ class TestTimeoutParameter:
         c.graphql_request("{ __typename }")
         _, kwargs = mock_urlopen.call_args
         assert kwargs["timeout"] == 45
+
+
+class TestRetryLogic:
+    @patch("src.core.wiki_client.time.sleep")
+    @patch("src.core.wiki_client.urllib.request.urlopen")
+    def test_retries_on_url_error(
+        self, mock_urlopen: MagicMock, mock_sleep: MagicMock, client: WikiClient
+    ) -> None:
+        """URLError triggers retry, succeeds on second attempt."""
+        mock_urlopen.side_effect = [
+            URLError("Connection refused"),
+            _mock_response({"data": {"ok": True}}),
+        ]
+        result = client.graphql_request("{ __typename }")
+        assert result == {"data": {"ok": True}}
+        assert mock_urlopen.call_count == 2
+        mock_sleep.assert_called_once_with(2)
+
+    @patch("src.core.wiki_client.time.sleep")
+    @patch("src.core.wiki_client.urllib.request.urlopen")
+    def test_no_retry_on_http_error(
+        self, mock_urlopen: MagicMock, mock_sleep: MagicMock, client: WikiClient
+    ) -> None:
+        """HTTPError (auth failure) does NOT trigger retry."""
+        mock_urlopen.side_effect = HTTPError(
+            "https://wiki.test.com/graphql", 401, "Unauthorized",
+            {}, BytesIO(b"Auth failed"),
+        )
+        with pytest.raises(WikiClientError) as exc_info:
+            client.graphql_request("{ __typename }")
+        assert exc_info.value.status_code == 401
+        assert not exc_info.value.is_connection_error
+        assert mock_urlopen.call_count == 1
+        mock_sleep.assert_not_called()
+
+    @patch("src.core.wiki_client.time.sleep")
+    @patch("src.core.wiki_client.urllib.request.urlopen")
+    def test_retries_exhausted(
+        self, mock_urlopen: MagicMock, mock_sleep: MagicMock, client: WikiClient
+    ) -> None:
+        """All 3 retries fail — raises WikiClientError with is_connection_error."""
+        mock_urlopen.side_effect = URLError("DNS lookup failed")
+        with pytest.raises(WikiClientError) as exc_info:
+            client.graphql_request("{ __typename }")
+        assert exc_info.value.is_connection_error is True
+        assert exc_info.value.status_code is None
+        assert mock_urlopen.call_count == 3
+        assert mock_sleep.call_count == 2  # sleep between attempts 1-2 and 2-3
+
+    @patch("src.core.wiki_client.time.sleep")
+    @patch("src.core.wiki_client.urllib.request.urlopen")
+    def test_retries_on_os_error(
+        self, mock_urlopen: MagicMock, mock_sleep: MagicMock, client: WikiClient
+    ) -> None:
+        """Raw OSError (e.g. ConnectionResetError) triggers retry."""
+        mock_urlopen.side_effect = [
+            ConnectionResetError("Connection reset by peer"),
+            _mock_response({"data": {"ok": True}}),
+        ]
+        result = client.graphql_request("{ __typename }")
+        assert result == {"data": {"ok": True}}
+        assert mock_urlopen.call_count == 2
+
+    @patch("src.core.wiki_client.time.sleep")
+    @patch("src.core.wiki_client.urllib.request.urlopen")
+    def test_succeeds_on_third_attempt(
+        self, mock_urlopen: MagicMock, mock_sleep: MagicMock, client: WikiClient
+    ) -> None:
+        """Fails twice, succeeds on third attempt."""
+        mock_urlopen.side_effect = [
+            URLError("Connection refused"),
+            URLError("Timeout"),
+            _mock_response({"data": {"ok": True}}),
+        ]
+        result = client.graphql_request("{ __typename }")
+        assert result == {"data": {"ok": True}}
+        assert mock_urlopen.call_count == 3
+        assert mock_sleep.call_count == 2

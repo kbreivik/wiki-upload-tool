@@ -15,6 +15,8 @@ from src.core.wiki_client import WikiClient, WikiClientError
 
 logger = logging.getLogger(__name__)
 
+_MAX_CONSECUTIVE_FAILURES = 3
+
 
 @dataclass
 class PageResult:
@@ -26,6 +28,7 @@ class PageResult:
     status: str  # "created", "updated", "skipped", "failed"
     message: str = ""
     page_id: int | None = None
+    is_connection_error: bool = False
 
 
 @dataclass
@@ -37,6 +40,8 @@ class UploadResult:
     skipped: int = 0
     failed: int = 0
     pages: list[PageResult] = field(default_factory=list)
+    stopped_early: bool = False
+    stop_reason: str = ""
 
     @property
     def total(self) -> int:
@@ -116,6 +121,9 @@ def upload_pages(
 ) -> UploadResult:
     """Upload a list of processed pages to Wiki.js.
 
+    Stops early if ``_MAX_CONSECUTIVE_FAILURES`` consecutive pages fail
+    with connection errors, setting ``stopped_early`` on the result.
+
     Args:
         client: WikiClient instance.
         pages: List of processed page dicts (from process_file).
@@ -128,6 +136,7 @@ def upload_pages(
         UploadResult with per-page details.
     """
     result = UploadResult()
+    consecutive_conn_failures = 0
 
     for i, page in enumerate(pages):
         if progress_callback:
@@ -143,12 +152,30 @@ def upload_pages(
         match page_result.status:
             case "created":
                 result.created += 1
+                consecutive_conn_failures = 0
             case "updated":
                 result.updated += 1
+                consecutive_conn_failures = 0
             case "skipped":
                 result.skipped += 1
+                consecutive_conn_failures = 0
             case "failed":
                 result.failed += 1
+                if page_result.is_connection_error:
+                    consecutive_conn_failures += 1
+                else:
+                    consecutive_conn_failures = 0
+
+        if consecutive_conn_failures >= _MAX_CONSECUTIVE_FAILURES:
+            reason = (
+                f"Connection lost after {_MAX_CONSECUTIVE_FAILURES} "
+                f"consecutive failures. {result.total} of {len(pages)} "
+                f"pages processed."
+            )
+            logger.error(reason)
+            result.stopped_early = True
+            result.stop_reason = reason
+            break
 
     return result
 
@@ -169,6 +196,7 @@ def _upload_single_page(
             title=page["title"],
             status="failed",
             message=str(e),
+            is_connection_error=e.is_connection_error,
         )
 
     if existing:
@@ -204,6 +232,7 @@ def _upload_single_page(
                 title=page["title"],
                 status="failed",
                 message=str(e),
+                is_connection_error=e.is_connection_error,
             )
 
         resp = (
@@ -260,6 +289,7 @@ def _upload_single_page(
                 title=page["title"],
                 status="failed",
                 message=str(e),
+                is_connection_error=e.is_connection_error,
             )
 
         resp = (
@@ -317,6 +347,8 @@ class TagResult:
     updated: int = 0
     skipped: int = 0
     failed: int = 0
+    stopped_early: bool = False
+    stop_reason: str = ""
 
     @property
     def total(self) -> int:
@@ -334,6 +366,8 @@ def apply_tag_changes(
     """Apply tag changes to wiki pages.
 
     Skips pages where ``current_tags`` and ``new_tags`` are identical.
+    Stops early if ``_MAX_CONSECUTIVE_FAILURES`` consecutive pages fail
+    with connection errors.
 
     Args:
         client: WikiClient instance.
@@ -345,6 +379,7 @@ def apply_tag_changes(
         TagResult with counts of updated, skipped, and failed pages.
     """
     result = TagResult()
+    consecutive_conn_failures = 0
 
     for i, op in enumerate(operations):
         if progress_callback:
@@ -358,6 +393,7 @@ def apply_tag_changes(
 
         if sorted(op.current_tags, key=str.lower) == sorted(op.new_tags, key=str.lower):
             result.skipped += 1
+            consecutive_conn_failures = 0
             continue
 
         try:
@@ -367,6 +403,20 @@ def apply_tag_changes(
                 "Failed to update tags on %s: %s", op.page_path, e
             )
             result.failed += 1
+            if e.is_connection_error:
+                consecutive_conn_failures += 1
+            else:
+                consecutive_conn_failures = 0
+            if consecutive_conn_failures >= _MAX_CONSECUTIVE_FAILURES:
+                reason = (
+                    f"Connection lost after {_MAX_CONSECUTIVE_FAILURES} "
+                    f"consecutive failures. {result.total} of "
+                    f"{len(operations)} pages processed."
+                )
+                logger.error(reason)
+                result.stopped_early = True
+                result.stop_reason = reason
+                break
             continue
 
         resp = (
@@ -378,10 +428,12 @@ def apply_tag_changes(
         if resp.get("succeeded"):
             logger.info("Updated tags on %s", op.page_path)
             result.updated += 1
+            consecutive_conn_failures = 0
         else:
             msg = f"{resp.get('errorCode', 'unknown')}: {resp.get('message', 'no details')}"
             logger.error("Failed to update tags on %s: %s", op.page_path, msg)
             result.failed += 1
+            consecutive_conn_failures = 0
 
     return result
 
@@ -398,6 +450,7 @@ class ArchivePageResult:
     title: str
     status: str  # "archived", "moved", or "failed"
     message: str = ""
+    is_connection_error: bool = False
 
 
 @dataclass
@@ -407,6 +460,8 @@ class ArchiveResult:
     archived: int = 0
     failed: int = 0
     pages: list[ArchivePageResult] = field(default_factory=list)
+    stopped_early: bool = False
+    stop_reason: str = ""
 
     @property
     def total(self) -> int:
@@ -487,6 +542,7 @@ def _move_single_page(
         return ArchivePageResult(
             old_path=old_path, new_path=new_path, title=title,
             status="failed", message=f"Could not fetch content: {e}",
+            is_connection_error=e.is_connection_error,
         )
 
     if not full_page:
@@ -516,6 +572,7 @@ def _move_single_page(
         return ArchivePageResult(
             old_path=old_path, new_path=new_path, title=title,
             status="failed", message=f"Could not create archive copy: {e}",
+            is_connection_error=e.is_connection_error,
         )
 
     resp = (
@@ -539,6 +596,7 @@ def _move_single_page(
             old_path=old_path, new_path=new_path, title=title,
             status=success_status,
             message=f"Copied but could not delete original: {e}",
+            is_connection_error=e.is_connection_error,
         )
 
     del_resp = (
@@ -634,8 +692,13 @@ def _execute_page_moves(
     success_status: str = "archived",
     progress_callback: ArchiveProgressCallback | None = None,
 ) -> ArchiveResult:
-    """Shared implementation for archive and move operations."""
+    """Shared implementation for archive and move operations.
+
+    Stops early if ``_MAX_CONSECUTIVE_FAILURES`` consecutive pages fail
+    with connection errors.
+    """
     result = ArchiveResult()
+    consecutive_conn_failures = 0
 
     for i, page in enumerate(pages):
         if progress_callback:
@@ -657,8 +720,24 @@ def _execute_page_moves(
 
         if page_result.status != "failed":
             result.archived += 1
+            consecutive_conn_failures = 0
         else:
             result.failed += 1
+            if page_result.is_connection_error:
+                consecutive_conn_failures += 1
+            else:
+                consecutive_conn_failures = 0
+
+        if consecutive_conn_failures >= _MAX_CONSECUTIVE_FAILURES:
+            reason = (
+                f"Connection lost after {_MAX_CONSECUTIVE_FAILURES} "
+                f"consecutive failures. {result.total} of {len(pages)} "
+                f"pages processed."
+            )
+            logger.error(reason)
+            result.stopped_early = True
+            result.stop_reason = reason
+            break
 
     return result
 

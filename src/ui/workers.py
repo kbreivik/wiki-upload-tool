@@ -13,6 +13,7 @@ from src.core.upload import (
     TagOperation,
     TagResult,
     UploadResult,
+    _MAX_CONSECUTIVE_FAILURES,
     _move_single_page,
     _upload_single_page,
     apply_tag_changes,
@@ -30,12 +31,14 @@ class UploadWorker(QThread):
         progress(int, int, str): (current_index, total, filename)
         page_done(str, str, str): (filename, status, message)
         finished_upload(UploadResult): emitted when upload completes
+        batch_stopped(str): emitted when batch stops due to connection failures
         error(str): emitted on unexpected exception
     """
 
     progress = Signal(int, int, str)
     page_done = Signal(str, str, str)
     finished_upload = Signal(UploadResult)
+    batch_stopped = Signal(str)
     error = Signal(str)
 
     def __init__(
@@ -60,6 +63,7 @@ class UploadWorker(QThread):
         try:
             result = UploadResult()
             total = len(self._pages)
+            consecutive_conn_failures = 0
 
             for i, page in enumerate(self._pages):
                 if self._cancel_event.is_set():
@@ -74,18 +78,38 @@ class UploadWorker(QThread):
                 match page_result.status:
                     case "created":
                         result.created += 1
+                        consecutive_conn_failures = 0
                     case "updated":
                         result.updated += 1
+                        consecutive_conn_failures = 0
                     case "skipped":
                         result.skipped += 1
+                        consecutive_conn_failures = 0
                     case "failed":
                         result.failed += 1
+                        if page_result.is_connection_error:
+                            consecutive_conn_failures += 1
+                        else:
+                            consecutive_conn_failures = 0
 
                 self.page_done.emit(
                     page_result.filename,
                     page_result.status,
                     page_result.message,
                 )
+
+                if consecutive_conn_failures >= _MAX_CONSECUTIVE_FAILURES:
+                    reason = (
+                        f"Connection lost after {_MAX_CONSECUTIVE_FAILURES} "
+                        f"consecutive failures. {result.total} of {total} "
+                        f"pages processed."
+                    )
+                    logger.error(reason)
+                    result.stopped_early = True
+                    result.stop_reason = reason
+                    self.batch_stopped.emit(reason)
+                    self.finished_upload.emit(result)
+                    return
 
             self.finished_upload.emit(result)
         except Exception:
@@ -145,12 +169,14 @@ class _PageMoveWorkerBase(QThread):
         progress(int, int, str): (current_index, total, old_path)
         page_done(str, str, str, str): (old_path, new_path, status, message)
         finished_result(ArchiveResult): emitted when operation completes
+        batch_stopped(str): emitted when batch stops due to connection failures
         error(str): emitted on unexpected exception
     """
 
     progress = Signal(int, int, str)
     page_done = Signal(str, str, str, str)
     finished_result = Signal(ArchiveResult)
+    batch_stopped = Signal(str)
     error = Signal(str)
 
     _include_folder_name: bool = True
@@ -182,6 +208,7 @@ class _PageMoveWorkerBase(QThread):
         try:
             result = ArchiveResult()
             total = len(self._pages)
+            consecutive_conn_failures = 0
 
             for i, page in enumerate(self._pages):
                 if self._cancel_event.is_set():
@@ -207,8 +234,13 @@ class _PageMoveWorkerBase(QThread):
 
                 if page_result.status != "failed":
                     result.archived += 1
+                    consecutive_conn_failures = 0
                 else:
                     result.failed += 1
+                    if page_result.is_connection_error:
+                        consecutive_conn_failures += 1
+                    else:
+                        consecutive_conn_failures = 0
 
                 self.page_done.emit(
                     page_result.old_path,
@@ -216,6 +248,19 @@ class _PageMoveWorkerBase(QThread):
                     page_result.status,
                     page_result.message,
                 )
+
+                if consecutive_conn_failures >= _MAX_CONSECUTIVE_FAILURES:
+                    reason = (
+                        f"Connection lost after {_MAX_CONSECUTIVE_FAILURES} "
+                        f"consecutive failures. {result.total} of {total} "
+                        f"pages processed."
+                    )
+                    logger.error(reason)
+                    result.stopped_early = True
+                    result.stop_reason = reason
+                    self.batch_stopped.emit(reason)
+                    self.finished_result.emit(result)
+                    return
 
             self.finished_result.emit(result)
         except Exception:
@@ -262,12 +307,14 @@ class TagManagerWorker(QThread):
         page_done(str, str): (page_path, status) where status is
             "updated", "skipped", or "failed"
         finished_result(TagResult): emitted when operation completes
+        batch_stopped(str): emitted when batch stops due to connection failures
         error(str): emitted on unexpected exception
     """
 
     progress = Signal(int, int, str)
     page_done = Signal(str, str)
     finished_result = Signal(TagResult)
+    batch_stopped = Signal(str)
     error = Signal(str)
 
     def __init__(
@@ -289,6 +336,7 @@ class TagManagerWorker(QThread):
         try:
             result = TagResult()
             total = len(self._operations)
+            consecutive_conn_failures = 0
 
             for i, op in enumerate(self._operations):
                 if self._cancel_event.is_set():
@@ -301,6 +349,7 @@ class TagManagerWorker(QThread):
 
                 if sorted(op.current_tags, key=str.lower) == sorted(op.new_tags, key=str.lower):
                     result.skipped += 1
+                    consecutive_conn_failures = 0
                     self.page_done.emit(op.page_path, "skipped")
                     continue
 
@@ -314,6 +363,23 @@ class TagManagerWorker(QThread):
                     )
                     result.failed += 1
                     self.page_done.emit(op.page_path, "failed")
+                    if e.is_connection_error:
+                        consecutive_conn_failures += 1
+                    else:
+                        consecutive_conn_failures = 0
+                    if consecutive_conn_failures >= _MAX_CONSECUTIVE_FAILURES:
+                        reason = (
+                            f"Connection lost after "
+                            f"{_MAX_CONSECUTIVE_FAILURES} consecutive "
+                            f"failures. {result.total} of {total} pages "
+                            f"processed."
+                        )
+                        logger.error(reason)
+                        result.stopped_early = True
+                        result.stop_reason = reason
+                        self.batch_stopped.emit(reason)
+                        self.finished_result.emit(result)
+                        return
                     continue
 
                 resp = (
@@ -324,9 +390,11 @@ class TagManagerWorker(QThread):
                 )
                 if resp.get("succeeded"):
                     result.updated += 1
+                    consecutive_conn_failures = 0
                     self.page_done.emit(op.page_path, "updated")
                 else:
                     result.failed += 1
+                    consecutive_conn_failures = 0
                     self.page_done.emit(op.page_path, "failed")
 
             self.finished_result.emit(result)
