@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
+    QPlainTextEdit,
     QProgressBar,
     QPushButton,
     QScrollArea,
@@ -265,7 +266,7 @@ class TagManagerDialog(QDialog):
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
 
-        # ── Left panel ───────────────────────────────────────
+        # ── Left panel (Pages) ───────────────────────────────
         left = QWidget()
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(0, 0, 0, 0)
@@ -288,6 +289,17 @@ class TagManagerDialog(QDialog):
         path_row.addWidget(self._load_btn)
         left_layout.addLayout(path_row)
 
+        # Select all / deselect all
+        sel_row = QHBoxLayout()
+        select_all_btn = QPushButton("Select All")
+        select_all_btn.clicked.connect(lambda: self._model.set_all_checked(True))
+        deselect_all_btn = QPushButton("Deselect All")
+        deselect_all_btn.clicked.connect(lambda: self._model.set_all_checked(False))
+        sel_row.addWidget(select_all_btn)
+        sel_row.addWidget(deselect_all_btn)
+        sel_row.addStretch()
+        left_layout.addLayout(sel_row)
+
         # Page table
         self._model = _PageTagModel()
         self._table = QTableView()
@@ -304,18 +316,12 @@ class TagManagerDialog(QDialog):
         self._model.dataChanged.connect(self._on_page_selection_changed)
         self._model.modelReset.connect(self._on_page_selection_changed)
 
-        # Select all / deselect all
-        sel_row = QHBoxLayout()
-        select_all_btn = QPushButton("Select All")
-        select_all_btn.clicked.connect(lambda: self._model.set_all_checked(True))
-        deselect_all_btn = QPushButton("Deselect All")
-        deselect_all_btn.clicked.connect(lambda: self._model.set_all_checked(False))
-        sel_row.addWidget(select_all_btn)
-        sel_row.addWidget(deselect_all_btn)
-        sel_row.addStretch()
-        left_layout.addLayout(sel_row)
-
         left_layout.addWidget(self._table, stretch=1)
+
+        # ── Center panel (Tag Actions) ───────────────────────
+        center = QWidget()
+        center_layout = QVBoxLayout(center)
+        center_layout.setContentsMargins(0, 0, 0, 0)
 
         # Add tags section
         add_group = QGroupBox("Add tags:")
@@ -324,7 +330,7 @@ class TagManagerDialog(QDialog):
         self._add_section.set_tags([])
         self._add_section.selection_changed.connect(self._update_preview)
         add_layout.addWidget(self._add_section)
-        left_layout.addWidget(add_group)
+        center_layout.addWidget(add_group)
 
         # Remove tags section
         remove_group = QGroupBox("Remove tags (from selected pages):")
@@ -335,9 +341,29 @@ class TagManagerDialog(QDialog):
         )
         self._remove_section.selection_changed.connect(self._update_preview)
         remove_layout.addWidget(self._remove_section)
-        left_layout.addWidget(remove_group)
+        center_layout.addWidget(remove_group)
 
-        # Buttons
+        center_layout.addStretch()
+
+        # ── Right panel (Preview) ────────────────────────────
+        preview_group = QGroupBox("Preview:")
+        preview_layout = QVBoxLayout(preview_group)
+        self._preview_edit = QPlainTextEdit()
+        self._preview_edit.setReadOnly(True)
+        self._preview_edit.setPlaceholderText("No changes")
+        preview_layout.addWidget(self._preview_edit)
+
+        # ── Three-panel splitter ─────────────────────────────
+        self._splitter = QSplitter(Qt.Orientation.Horizontal)
+        self._splitter.addWidget(left)
+        self._splitter.addWidget(center)
+        self._splitter.addWidget(preview_group)
+        self._splitter.setStretchFactor(0, 4)  # 40%
+        self._splitter.setStretchFactor(1, 3)  # 30%
+        self._splitter.setStretchFactor(2, 3)  # 30%
+        root.addWidget(self._splitter, stretch=1)
+
+        # ── Bottom bar (full width) ──────────────────────────
         btn_row = QHBoxLayout()
         self._cancel_btn = QPushButton("Cancel")
         self._cancel_btn.clicked.connect(self.reject)
@@ -347,35 +373,14 @@ class TagManagerDialog(QDialog):
         self._apply_btn.setEnabled(False)
         self._apply_btn.clicked.connect(self._on_apply)
         btn_row.addWidget(self._apply_btn)
-        left_layout.addLayout(btn_row)
+        root.addLayout(btn_row)
 
         self._progress_bar = QProgressBar()
         self._progress_bar.setVisible(False)
-        left_layout.addWidget(self._progress_bar)
+        root.addWidget(self._progress_bar)
 
         self._status_label = QLabel("")
-        left_layout.addWidget(self._status_label)
-
-        # ── Right panel (Preview) ────────────────────────────
-        preview_group = QGroupBox("Preview:")
-        preview_layout = QVBoxLayout(preview_group)
-        self._preview_scroll = QScrollArea()
-        self._preview_scroll.setWidgetResizable(True)
-        self._preview_container = QWidget()
-        self._preview_layout = QVBoxLayout(self._preview_container)
-        self._preview_layout.setContentsMargins(4, 4, 4, 4)
-        self._preview_layout.setSpacing(2)
-        self._preview_layout.addStretch()
-        self._preview_scroll.setWidget(self._preview_container)
-        preview_layout.addWidget(self._preview_scroll)
-
-        # ── Horizontal splitter ──────────────────────────────
-        self._splitter = QSplitter(Qt.Orientation.Horizontal)
-        self._splitter.addWidget(left)
-        self._splitter.addWidget(preview_group)
-        self._splitter.setStretchFactor(0, 3)  # 60%
-        self._splitter.setStretchFactor(1, 2)  # 40%
-        root.addWidget(self._splitter, stretch=1)
+        root.addWidget(self._status_label)
 
     # ── Settings persistence ─────────────────────────────────
 
@@ -384,7 +389,7 @@ class TagManagerDialog(QDialog):
         if geo:
             self.restoreGeometry(geo)
         else:
-            self.resize(1000, 700)
+            self.resize(1200, 600)
         splitter_state = self._settings.value("tag_manager/splitter")
         if splitter_state:
             self._splitter.restoreState(splitter_state)
@@ -501,33 +506,22 @@ class TagManagerDialog(QDialog):
     # ── Preview ─────────────────────────────────────────────────
 
     def _update_preview(self) -> None:
-        # Clear existing preview labels
-        while self._preview_layout.count() > 1:
-            item = self._preview_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-
         add_tags = set(self._add_section.get_checked())
         remove_tags = set(self._remove_section.get_checked())
         checked = self._model.get_checked_pages()
 
-        has_changes = False
+        lines: list[str] = []
         for page in checked:
             current = set(page.get("tags", []))
             new = (current | add_tags) - remove_tags
             if current != new:
-                has_changes = True
                 current_str = ", ".join(sorted(current)) or "(none)"
                 new_str = ", ".join(sorted(new)) or "(none)"
                 title = page.get("title", page["path"])
-                label = QLabel(f"  {title}:  {current_str}  \u2192  {new_str}")
-                label.setWordWrap(True)
-                # Insert before the stretch
-                self._preview_layout.insertWidget(
-                    self._preview_layout.count() - 1, label
-                )
+                lines.append(f"{title}:  {current_str}  \u2192  {new_str}")
 
-        self._apply_btn.setEnabled(has_changes)
+        self._preview_edit.setPlainText("\n".join(lines))
+        self._apply_btn.setEnabled(len(lines) > 0)
 
     # ── Apply ───────────────────────────────────────────────────
 
