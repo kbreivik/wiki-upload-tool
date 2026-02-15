@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -66,8 +67,11 @@ class TagEditor(QWidget):
         # Scrollable checkbox area using QGridLayout
         self._scroll = QScrollArea()
         self._scroll.setWidgetResizable(True)
-        self._scroll.setMaximumHeight(100)
-        self._scroll.setMinimumHeight(40)
+        self._scroll.setMaximumHeight(120)
+        self._scroll.setMinimumHeight(24)
+        self._scroll.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum
+        )
 
         self._grid_container = QWidget()
         self._grid_layout = QGridLayout(self._grid_container)

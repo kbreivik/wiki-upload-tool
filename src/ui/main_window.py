@@ -173,7 +173,10 @@ class MainWindow(QMainWindow):
         # Tags section
         center_layout.addWidget(QLabel("Tags:"))
         self._tag_editor = TagEditor()
-        center_layout.addWidget(self._tag_editor, stretch=1)
+        center_layout.addWidget(self._tag_editor)
+
+        # Push everything up — empty space goes below tags
+        center_layout.addStretch()
 
         # Connect signals for preview debouncing
         self._base_path.editingFinished.connect(self._schedule_preview)
