@@ -266,12 +266,7 @@ class TagManagerDialog(QDialog):
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
 
-        # ── Left panel (Pages) ───────────────────────────────
-        left = QWidget()
-        left_layout = QVBoxLayout(left)
-        left_layout.setContentsMargins(0, 0, 0, 0)
-
-        # Path selector row
+        # ── Top bar (full width) ─────────────────────────────
         path_row = QHBoxLayout()
         path_row.addWidget(QLabel("Path:"))
         self._path_input = QLineEdit()
@@ -287,9 +282,8 @@ class TagManagerDialog(QDialog):
         self._load_btn.setFixedWidth(60)
         self._load_btn.clicked.connect(self._on_load)
         path_row.addWidget(self._load_btn)
-        left_layout.addLayout(path_row)
+        root.addLayout(path_row)
 
-        # Select all / deselect all
         sel_row = QHBoxLayout()
         select_all_btn = QPushButton("Select All")
         select_all_btn.clicked.connect(lambda: self._model.set_all_checked(True))
@@ -298,9 +292,9 @@ class TagManagerDialog(QDialog):
         sel_row.addWidget(select_all_btn)
         sel_row.addWidget(deselect_all_btn)
         sel_row.addStretch()
-        left_layout.addLayout(sel_row)
+        root.addLayout(sel_row)
 
-        # Page table
+        # ── Left panel (Pages) ───────────────────────────────
         self._model = _PageTagModel()
         self._table = QTableView()
         self._table.setModel(self._model)
@@ -316,14 +310,11 @@ class TagManagerDialog(QDialog):
         self._model.dataChanged.connect(self._on_page_selection_changed)
         self._model.modelReset.connect(self._on_page_selection_changed)
 
-        left_layout.addWidget(self._table, stretch=1)
-
         # ── Center panel (Tag Actions) ───────────────────────
         center = QWidget()
         center_layout = QVBoxLayout(center)
         center_layout.setContentsMargins(0, 0, 0, 0)
 
-        # Add tags section
         add_group = QGroupBox("Add tags:")
         add_layout = QVBoxLayout(add_group)
         self._add_section = _TagCheckboxSection("Add")
@@ -332,7 +323,6 @@ class TagManagerDialog(QDialog):
         add_layout.addWidget(self._add_section)
         center_layout.addWidget(add_group)
 
-        # Remove tags section
         remove_group = QGroupBox("Remove tags (from selected pages):")
         remove_layout = QVBoxLayout(remove_group)
         self._remove_section = _TagCheckboxSection(
@@ -355,7 +345,7 @@ class TagManagerDialog(QDialog):
 
         # ── Three-panel splitter ─────────────────────────────
         self._splitter = QSplitter(Qt.Orientation.Horizontal)
-        self._splitter.addWidget(left)
+        self._splitter.addWidget(self._table)
         self._splitter.addWidget(center)
         self._splitter.addWidget(preview_group)
         self._splitter.setStretchFactor(0, 4)  # 40%
@@ -363,16 +353,17 @@ class TagManagerDialog(QDialog):
         self._splitter.setStretchFactor(2, 3)  # 30%
         root.addWidget(self._splitter, stretch=1)
 
-        # ── Bottom bar (full width) ──────────────────────────
+        # ── Bottom bar (centered, full width) ────────────────
         btn_row = QHBoxLayout()
+        btn_row.addStretch()
         self._cancel_btn = QPushButton("Cancel")
         self._cancel_btn.clicked.connect(self.reject)
         btn_row.addWidget(self._cancel_btn)
-        btn_row.addStretch()
         self._apply_btn = QPushButton("Apply Changes")
         self._apply_btn.setEnabled(False)
         self._apply_btn.clicked.connect(self._on_apply)
         btn_row.addWidget(self._apply_btn)
+        btn_row.addStretch()
         root.addLayout(btn_row)
 
         self._progress_bar = QProgressBar()
@@ -475,15 +466,14 @@ class TagManagerDialog(QDialog):
     # ── Table click → toggle checkbox ─────────────────────────
 
     def _on_table_clicked(self, index: QModelIndex) -> None:
-        if index.column() == 0:
-            model = self._model
-            current = model.data(index, Qt.ItemDataRole.CheckStateRole)
-            new_state = (
-                Qt.CheckState.Unchecked
-                if current == Qt.CheckState.Checked
-                else Qt.CheckState.Checked
-            )
-            model.setData(index, new_state, Qt.ItemDataRole.CheckStateRole)
+        check_index = index.siblingAtColumn(0)
+        current = self._model.data(check_index, Qt.ItemDataRole.CheckStateRole)
+        new_state = (
+            Qt.CheckState.Unchecked
+            if current == Qt.CheckState.Checked
+            else Qt.CheckState.Checked
+        )
+        self._model.setData(check_index, new_state, Qt.ItemDataRole.CheckStateRole)
 
     # ── Page selection changed ──────────────────────────────────
 
