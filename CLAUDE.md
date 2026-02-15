@@ -56,12 +56,12 @@ python upload-and-edit-wiki-tool.py
 uv venv .venv
 # Activate (Windows)
 .venv\Scripts\activate
-# Install deps
+# Install project + dev deps (pytest, ruff, pytest-qt)
 uv pip install -e ".[dev]"
-# Install Nuitka inside the venv
-uv pip install nuitka
+# Install build deps (nuitka, zstandard, ordered-set) — only needed for standalone exe
+uv pip install -e ".[build]"
 ```
-IMPORTANT: All Python commands run inside the venv. Nuitka MUST be installed in the venv, not globally.
+IMPORTANT: All Python commands run inside the venv. Build deps (including Nuitka) MUST be installed in the venv, not globally.
 
 ### Target Architecture
 ```
@@ -102,8 +102,8 @@ wiki-upload-tool/
 ## Commands
 - `python upload-and-edit-wiki-tool.py --dry-run` — run original CLI
 - `uv venv .venv` — create venv
-- `uv pip install -e ".[dev]"` — install project + dev deps in editable mode
-- `uv pip install nuitka` — install Nuitka in venv
+- `uv pip install -e ".[dev]"` — install project + dev deps (pytest, ruff, pytest-qt)
+- `uv pip install -e ".[build]"` — install build deps (nuitka, zstandard, ordered-set)
 - `uv run python src/main.py` — run the GUI app in dev mode
 - `uv run pytest tests/` — run all tests
 - `uv run pytest tests/ -x -v` — run tests, stop on first failure, verbose
@@ -137,6 +137,7 @@ wiki-upload-tool/
 - C extensions: use `--include-module=` for each native module
 - Nuitka native code triggers fewer AV alerts than PyInstaller — still sign exe for corporate environments
 - Nuitka must be installed in the venv, not globally — it needs access to the same packages
+- Install `.[build]` extras for zstandard (onefile compression) and ordered-set (build performance)
 
 ## Git Workflow
 - Branch per feature: `feature/description` or `fix/description`
