@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMainWindow,
     QMessageBox,
+    QPlainTextEdit,
     QProgressBar,
     QPushButton,
     QSplitter,
@@ -39,7 +40,7 @@ from src.ui.widgets.file_table import FileTableView
 from src.ui.widgets.log_viewer import LogHandler, LogViewer
 from src.ui.widgets.chip_editor import ChipEditor
 from src.ui.widgets.tag_editor import TagEditor
-from src.ui.workers import TestConnectionWorker, UploadWorker
+from src.ui.workers import FetchTagsWorker, TestConnectionWorker, UploadWorker
 
 logger = logging.getLogger(__name__)
 
@@ -48,16 +49,24 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("Wiki.js Upload Tool")
-        self.setMinimumSize(700, 600)
+        self.setMinimumSize(900, 500)
 
         self._upload_worker: UploadWorker | None = None
         self._test_worker: TestConnectionWorker | None = None
+        self._tags_worker: FetchTagsWorker | None = None
+        self._wiki_tags_cache: list[str] | None = None
         self._settings = QSettings("wiki-upload-tool", "wiki-upload-tool")
         self._auto_testing = False
 
         self._build_ui()
         self._setup_logging()
         self._restore_settings()
+
+        # Debounce timer for live preview
+        self._preview_timer = QTimer()
+        self._preview_timer.setSingleShot(True)
+        self._preview_timer.setInterval(200)
+        self._preview_timer.timeout.connect(self._update_preview)
 
         # Auto-test connection after the window renders
         QTimer.singleShot(500, self._auto_test_connection)
@@ -69,89 +78,54 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
         root = QVBoxLayout(central)
 
-        # Top half: config groups
-        config_widget = QWidget()
-        config_layout = QVBoxLayout(config_widget)
-        config_layout.setContentsMargins(0, 0, 0, 0)
-        config_layout.addWidget(self._build_connection_group())
-        config_layout.addWidget(self._build_source_group())
-        config_layout.addWidget(self._build_destination_group())
-        config_layout.addWidget(self._build_options_group())
-
-        # File table
-        self._file_table = FileTableView()
-
-        # Splitter: config top, file table bottom
-        splitter = QSplitter(Qt.Orientation.Vertical)
-        splitter.addWidget(config_widget)
-        splitter.addWidget(self._file_table)
-        splitter.setStretchFactor(0, 0)
-        splitter.setStretchFactor(1, 1)
-        root.addWidget(splitter, stretch=1)
-
-        # Action buttons
-        root.addLayout(self._build_action_buttons())
-
-        # Log viewer + progress
-        self._log_viewer = LogViewer()
-        self._log_viewer.setMaximumHeight(150)
-        root.addWidget(QLabel("Log"))
-        root.addWidget(self._log_viewer)
-
-        self._progress_bar = QProgressBar()
-        self._progress_bar.setVisible(False)
-        root.addWidget(self._progress_bar)
-
-    def _build_connection_group(self) -> QGroupBox:
-        group = QGroupBox("Connection")
-        layout = QFormLayout(group)
-
-        # Wiki URL
-        url_row = QHBoxLayout()
+        # ── Connection bar (full width, above splitter) ─────────
+        conn_row = QHBoxLayout()
+        conn_row.addWidget(QLabel("Wiki URL:"))
         self._wiki_url = QLineEdit()
         self._wiki_url.setPlaceholderText("https://wiki.example.com")
+        conn_row.addWidget(self._wiki_url, stretch=1)
+
         self._test_btn = QPushButton("Test")
         self._test_btn.setFixedWidth(60)
         self._test_btn.clicked.connect(self._on_test_connection)
-        url_row.addWidget(self._wiki_url)
-        url_row.addWidget(self._test_btn)
-        layout.addRow("Wiki URL:", url_row)
+        conn_row.addWidget(self._test_btn)
 
-        # API Key (password mode)
-        key_row = QHBoxLayout()
+        conn_row.addSpacing(12)
+        conn_row.addWidget(QLabel("API Key:"))
         self._api_key = QLineEdit()
         self._api_key.setEchoMode(QLineEdit.EchoMode.Password)
         self._api_key.setPlaceholderText("Bearer API key")
+        conn_row.addWidget(self._api_key, stretch=1)
+
         self._connection_indicator = ConnectionIndicator()
-        key_row.addWidget(self._api_key)
-        key_row.addWidget(self._connection_indicator)
-        layout.addRow("API Key:", key_row)
+        conn_row.addWidget(self._connection_indicator)
+        root.addLayout(conn_row)
 
-        return group
+        # ── Left panel (Source) ─────────────────────────────────
+        left_panel = QGroupBox("Source")
+        left_layout = QVBoxLayout(left_panel)
 
-    def _build_source_group(self) -> QGroupBox:
-        group = QGroupBox("Source")
-        layout = QFormLayout(group)
-
-        # Folder picker
         folder_row = QHBoxLayout()
+        folder_row.addWidget(QLabel("Folder:"))
         self._source_dir = QLineEdit()
         self._source_dir.setPlaceholderText("Path to folder with .md files")
+        folder_row.addWidget(self._source_dir, stretch=1)
         self._browse_btn = QPushButton("Browse...")
         self._browse_btn.setFixedWidth(80)
         self._browse_btn.clicked.connect(self._on_browse_folder)
-        folder_row.addWidget(self._source_dir)
         folder_row.addWidget(self._browse_btn)
-        layout.addRow("Folder:", folder_row)
+        left_layout.addLayout(folder_row)
+
+        self._file_table = FileTableView()
+        left_layout.addWidget(self._file_table, stretch=1)
 
         self._source_dir.editingFinished.connect(self._refresh_file_list)
 
-        return group
+        # ── Center panel (Destination & Options) ────────────────
+        center_panel = QGroupBox("Destination && Options")
+        center_layout = QVBoxLayout(center_panel)
 
-    def _build_destination_group(self) -> QGroupBox:
-        group = QGroupBox("Destination")
-        layout = QFormLayout(group)
-
+        form = QFormLayout()
         # Base path
         base_row = QHBoxLayout()
         self._base_path = QLineEdit()
@@ -162,82 +136,138 @@ class MainWindow(QMainWindow):
         self._pick_path_btn.clicked.connect(self._on_pick_path)
         base_row.addWidget(self._base_path)
         base_row.addWidget(self._pick_path_btn)
-        layout.addRow("Base Path:", base_row)
+        form.addRow("Base Path:", base_row)
 
         # Locale
         self._locale = QComboBox()
         self._locale.setEditable(True)
         self._locale.addItems(["en", "nb", "de", "fr", "es"])
-        layout.addRow("Locale:", self._locale)
+        form.addRow("Locale:", self._locale)
 
         # Index file
         self._index_file = QLineEdit("README.md")
-        layout.addRow("Index file:", self._index_file)
+        form.addRow("Index file:", self._index_file)
 
+        center_layout.addLayout(form)
+
+        # Options row
+        self._update_existing = QCheckBox("Update existing pages")
+        center_layout.addWidget(self._update_existing)
+
+        # Footer strip
+        strip_row = QHBoxLayout()
+        strip_row.addWidget(QLabel("Footer strip:"))
+        self._strip_editor = ChipEditor(placeholder="regex pattern...")
+        strip_row.addWidget(self._strip_editor, stretch=1)
+        center_layout.addLayout(strip_row)
+
+        # Tags section
+        center_layout.addWidget(QLabel("Tags:"))
+        self._tag_editor = TagEditor()
+        center_layout.addWidget(self._tag_editor, stretch=1)
+
+        # Connect signals for preview debouncing
+        self._base_path.editingFinished.connect(self._schedule_preview)
+        self._locale.currentTextChanged.connect(self._schedule_preview)
+        self._index_file.editingFinished.connect(self._schedule_preview)
+        self._tag_editor.tags_changed.connect(self._schedule_preview)
+
+        # Also refresh file list on config changes
         self._base_path.editingFinished.connect(self._refresh_file_list)
         self._locale.currentTextChanged.connect(self._refresh_file_list)
         self._index_file.editingFinished.connect(self._refresh_file_list)
 
-        return group
+        # ── Right panel (Preview) ──────────────────────────────
+        right_panel = QGroupBox("Preview")
+        right_layout = QVBoxLayout(right_panel)
+        self._preview_edit = QPlainTextEdit()
+        self._preview_edit.setReadOnly(True)
+        self._preview_edit.setPlaceholderText(
+            "Select source folder and files to see preview"
+        )
+        right_layout.addWidget(self._preview_edit)
 
-    def _build_options_group(self) -> QGroupBox:
-        group = QGroupBox("Options")
-        layout = QVBoxLayout(group)
+        # ── Three-panel splitter ───────────────────────────────
+        self._main_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self._main_splitter.addWidget(left_panel)
+        self._main_splitter.addWidget(center_panel)
+        self._main_splitter.addWidget(right_panel)
+        self._main_splitter.setStretchFactor(0, 30)   # 30%
+        self._main_splitter.setStretchFactor(1, 35)   # 35%
+        self._main_splitter.setStretchFactor(2, 35)   # 35%
+        root.addWidget(self._main_splitter, stretch=1)
 
-        # Row 1: checkbox + footer strip on the same line
-        top_row = QHBoxLayout()
-        self._update_existing = QCheckBox("Update existing pages")
-        top_row.addWidget(self._update_existing)
-        top_row.addSpacing(20)
-        top_row.addWidget(QLabel("Footer strip:"))
-        self._strip_editor = ChipEditor(placeholder="regex pattern...")
-        top_row.addWidget(self._strip_editor, stretch=1)
-        layout.addLayout(top_row)
+        # Connect file table model changes for preview updates
+        self._file_table.file_model.dataChanged.connect(self._schedule_preview)
 
-        # Tags section
-        self._tag_editor = TagEditor()
-        layout.addWidget(self._tag_editor)
-
-        return group
-
-    def _build_action_buttons(self) -> QHBoxLayout:
-        row = QHBoxLayout()
+        # ── Bottom bar (centered action buttons) ───────────────
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
 
         self._dry_run_btn = QPushButton("Dry Run Preview")
         self._dry_run_btn.clicked.connect(self._on_dry_run)
-        row.addWidget(self._dry_run_btn)
+        btn_row.addWidget(self._dry_run_btn)
 
         self._upload_btn = QPushButton("Upload Selected")
         self._upload_btn.clicked.connect(self._on_upload)
-        row.addWidget(self._upload_btn)
+        btn_row.addWidget(self._upload_btn)
 
         self._cancel_btn = QPushButton("Cancel")
         self._cancel_btn.setEnabled(False)
         self._cancel_btn.clicked.connect(self._on_cancel)
-        row.addWidget(self._cancel_btn)
+        btn_row.addWidget(self._cancel_btn)
+
+        btn_row.addSpacing(20)
 
         self._archive_btn = QPushButton("Archive...")
         self._archive_btn.setEnabled(False)
         self._archive_btn.clicked.connect(self._on_archive)
-        row.addWidget(self._archive_btn)
+        btn_row.addWidget(self._archive_btn)
 
         self._move_btn = QPushButton("Move...")
         self._move_btn.setEnabled(False)
         self._move_btn.clicked.connect(self._on_move)
-        row.addWidget(self._move_btn)
+        btn_row.addWidget(self._move_btn)
 
         self._tag_mgr_btn = QPushButton("Tag Manager...")
         self._tag_mgr_btn.setEnabled(False)
         self._tag_mgr_btn.clicked.connect(self._on_tag_manager)
-        row.addWidget(self._tag_mgr_btn)
-
-        row.addStretch()
+        btn_row.addWidget(self._tag_mgr_btn)
 
         self._settings_btn = QPushButton("Settings...")
         self._settings_btn.clicked.connect(self._on_settings)
-        row.addWidget(self._settings_btn)
+        btn_row.addWidget(self._settings_btn)
 
-        return row
+        btn_row.addStretch()
+        root.addLayout(btn_row)
+
+        # ── Log toggle + viewer ────────────────────────────────
+        log_row = QHBoxLayout()
+        self._log_toggle_btn = QPushButton("Show Log")
+        self._log_toggle_btn.clicked.connect(self._on_toggle_log)
+        log_row.addWidget(self._log_toggle_btn)
+        log_row.addStretch()
+        root.addLayout(log_row)
+
+        self._log_viewer = LogViewer()
+        self._log_viewer.setMaximumHeight(150)
+        self._log_viewer.setVisible(False)
+        root.addWidget(self._log_viewer)
+
+        # ── Progress bar ───────────────────────────────────────
+        self._progress_bar = QProgressBar()
+        self._progress_bar.setVisible(False)
+        root.addWidget(self._progress_bar)
+
+    # ── Log toggle ─────────────────────────────────────────────
+
+    def _on_toggle_log(self) -> None:
+        # Use isHidden() instead of isVisible() so toggle works even when
+        # the parent window hasn't been shown yet (e.g. in tests).
+        will_show = self._log_viewer.isHidden()
+        self._log_viewer.setVisible(will_show)
+        self._log_toggle_btn.setText("Hide Log" if will_show else "Show Log")
+        self._settings.setValue("main/log_visible", will_show)
 
     # ── Logging ────────────────────────────────────────────────
 
@@ -248,12 +278,20 @@ class MainWindow(QMainWindow):
         root_logger.addHandler(handler)
         root_logger.setLevel(logging.DEBUG)
 
-    # ── Settings persistence (2.6) ─────────────────────────────
+    # ── Settings persistence ───────────────────────────────────
 
     def _restore_settings(self) -> None:
         geo = self._settings.value("geometry")
         if geo:
             self.restoreGeometry(geo)
+        splitter_state = self._settings.value("main/splitter")
+        if splitter_state:
+            self._main_splitter.restoreState(splitter_state)
+        log_visible = self._settings.value("main/log_visible", False)
+        # QSettings returns strings on some platforms
+        if log_visible in (True, "true"):
+            self._log_viewer.setVisible(True)
+            self._log_toggle_btn.setText("Hide Log")
         self._wiki_url.setText(self._settings.value("wiki_url", ""))
         self._api_key.setText(self._settings.value("api_key", ""))
         self._source_dir.setText(self._settings.value("source_dir", ""))
@@ -274,6 +312,8 @@ class MainWindow(QMainWindow):
 
     def _save_settings(self) -> None:
         self._settings.setValue("geometry", self.saveGeometry())
+        self._settings.setValue("main/splitter", self._main_splitter.saveState())
+        self._settings.setValue("main/log_visible", self._log_viewer.isVisible())
         self._settings.setValue("wiki_url", self._wiki_url.text())
         self._settings.setValue("api_key", self._api_key.text())
         self._settings.setValue("source_dir", self._source_dir.text())
@@ -327,6 +367,65 @@ class MainWindow(QMainWindow):
             update_existing=self._update_existing.isChecked(),
             dry_run=dry_run,
         )
+
+    # ── Live preview ───────────────────────────────────────────
+
+    def _schedule_preview(self) -> None:
+        """Restart the 200ms debounce timer for preview updates."""
+        self._preview_timer.start(200)
+
+    def _update_preview(self) -> None:
+        """Build preview text showing each checked file's computed wiki path."""
+        source_dir = self._source_dir.text().strip()
+        base_path = self._base_path.text().strip()
+        locale = self._locale.currentText().strip()
+        index_file = self._index_file.text().strip() or "README.md"
+
+        checked = self._file_table.file_model.get_checked_files()
+        if not checked or not source_dir:
+            self._preview_edit.clear()
+            return
+
+        lines: list[str] = []
+        for f in checked:
+            filename = f.get("filename", "")
+            slug = f.get("slug", "")
+            if slug:
+                path = f"/{locale}/{base_path}/{slug}"
+            else:
+                path = f"/{locale}/{base_path}"
+            lines.append(f"{filename}  \u2192  {path}")
+
+        # Show selected tags
+        tags = self._tag_editor.get_tags()
+        if tags:
+            lines.append("")
+            lines.append(f"Tags: {', '.join(tags)}")
+
+        self._preview_edit.setPlainText("\n".join(lines))
+
+    # ── Tag loading ────────────────────────────────────────────
+
+    def _fetch_wiki_tags(self) -> None:
+        """Fetch wiki tags in the background after a successful connection."""
+        url = self._wiki_url.text().strip().rstrip("/")
+        key = self._api_key.text().strip()
+        if not url or not key:
+            return
+
+        client = WikiClient(url, key)
+        self._tags_worker = FetchTagsWorker(client)
+        self._tags_worker.tags_fetched.connect(self._on_tags_fetched)
+        self._tags_worker.failure.connect(self._on_tags_fetch_failed)
+        self._tags_worker.start()
+
+    def _on_tags_fetched(self, tags: list[str]) -> None:
+        self._wiki_tags_cache = tags
+        self._tag_editor.set_wiki_tags(tags)
+        logger.info("Loaded %d wiki tags", len(tags))
+
+    def _on_tags_fetch_failed(self, message: str) -> None:
+        logger.warning("Failed to fetch wiki tags: %s", message)
 
     # ── Actions ────────────────────────────────────────────────
 
@@ -416,6 +515,8 @@ class MainWindow(QMainWindow):
         logger.info("Connection test passed")
         # Clear any error styling on API key field
         self._api_key.setStyleSheet("")
+        # Fetch wiki tags after successful connection
+        self._fetch_wiki_tags()
 
     def _on_test_failure(self, message: str) -> None:
         was_auto = self._auto_testing

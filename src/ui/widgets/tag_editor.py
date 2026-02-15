@@ -4,7 +4,9 @@ import logging
 
 from PySide6.QtCore import QSettings, Signal, Qt
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -14,11 +16,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from src.ui.widgets.flow_layout import FlowLayout
-
 logger = logging.getLogger(__name__)
 
 _FILTER_THRESHOLD = 15
+_GRID_COLUMNS = 4
 
 
 class TagEditor(QWidget):
@@ -26,6 +27,10 @@ class TagEditor(QWidget):
 
     Shows a scrollable grid of checkbox tags. Supports filtering when
     there are many tags, and a custom-add field for new tags.
+
+    Uses QGridLayout (fixed 4 columns) instead of FlowLayout to avoid
+    the chicken-and-egg height-for-width bug where tags are hidden
+    until the first resize event.
 
     Signals:
         tags_changed(): emitted when the set of checked tags changes.
@@ -58,15 +63,17 @@ class TagEditor(QWidget):
         self._filter_label.setVisible(False)
         self._filter_input.setVisible(False)
 
-        # Scrollable checkbox area
+        # Scrollable checkbox area using QGridLayout
         self._scroll = QScrollArea()
         self._scroll.setWidgetResizable(True)
         self._scroll.setMaximumHeight(100)
         self._scroll.setMinimumHeight(40)
 
-        self._flow_container = QWidget()
-        self._flow_layout = FlowLayout(self._flow_container, margin=4, spacing=6)
-        self._scroll.setWidget(self._flow_container)
+        self._grid_container = QWidget()
+        self._grid_layout = QGridLayout(self._grid_container)
+        self._grid_layout.setContentsMargins(4, 4, 4, 4)
+        self._grid_layout.setSpacing(6)
+        self._scroll.setWidget(self._grid_container)
         root.addWidget(self._scroll)
 
         # Placeholder label (shown when not connected)
@@ -156,6 +163,12 @@ class TagEditor(QWidget):
         self._scroll.setVisible(True)
         self._placeholder.setVisible(False)
 
+        # Force Qt to process layout before display
+        QApplication.processEvents()
+        self._grid_container.updateGeometry()
+        self._scroll.updateGeometry()
+        self.updateGeometry()
+
     def _add_checkbox(self, tag: str, *, checked: bool = False) -> None:
         if tag in self._checkboxes:
             return
@@ -163,7 +176,10 @@ class TagEditor(QWidget):
         cb.setChecked(checked)
         cb.checkStateChanged.connect(self._on_check_changed)
         self._checkboxes[tag] = cb
-        self._flow_layout.addWidget(cb)
+        count = len(self._checkboxes) - 1
+        self._grid_layout.addWidget(
+            cb, count // _GRID_COLUMNS, count % _GRID_COLUMNS
+        )
 
     def _add_custom(self) -> None:
         tag = self._custom_input.text().strip()
