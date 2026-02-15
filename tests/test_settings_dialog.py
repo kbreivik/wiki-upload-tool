@@ -11,7 +11,7 @@ from src.ui.dialogs.settings_dialog import SettingsDialog
 @pytest.fixture(autouse=True)
 def _clear_settings():
     """Ensure a clean QSettings slate for every test."""
-    settings = QSettings("wiki-upload-tool", "wiki-upload-tool")
+    settings = QSettings(QSettings.Format.IniFormat, QSettings.Scope.UserScope, "wiki-upload-tool", "wiki-upload-tool")
     settings.clear()
     yield
     settings.clear()
@@ -53,7 +53,7 @@ class TestEnvImport:
     def test_partial_import_preserves_existing(self, qtbot, tmp_path, monkeypatch):
         """Missing .env variables should not blank out existing fields."""
         # Pre-set some values in QSettings
-        settings = QSettings("wiki-upload-tool", "wiki-upload-tool")
+        settings = QSettings(QSettings.Format.IniFormat, QSettings.Scope.UserScope, "wiki-upload-tool", "wiki-upload-tool")
         settings.setValue("wiki_url", "https://existing.com")
         settings.setValue("api_key", "old-key")
         settings.setValue("locale", "en")
@@ -108,7 +108,7 @@ class TestEnvExport:
 
     def test_export_excludes_gui_only_settings(self, qtbot, tmp_path, monkeypatch):
         """Archive root and move dest should NOT appear in .env export."""
-        settings = QSettings("wiki-upload-tool", "wiki-upload-tool")
+        settings = QSettings(QSettings.Format.IniFormat, QSettings.Scope.UserScope, "wiki-upload-tool", "wiki-upload-tool")
         settings.setValue("archive/root_path", "Docs/Arkiv")
         settings.setValue("move/dest_path", "Projects/Old")
 

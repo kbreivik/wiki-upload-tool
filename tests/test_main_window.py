@@ -14,7 +14,7 @@ from src.ui.main_window import MainWindow
 @pytest.fixture(autouse=True)
 def _clear_settings():
     """Ensure a clean QSettings slate for every test."""
-    settings = QSettings("wiki-upload-tool", "wiki-upload-tool")
+    settings = QSettings(QSettings.Format.IniFormat, QSettings.Scope.UserScope, "wiki-upload-tool", "wiki-upload-tool")
     settings.clear()
     yield
     settings.clear()
@@ -231,7 +231,7 @@ class TestLogToggle:
 
     def test_log_state_persisted(self, window, qtbot):
         qtbot.mouseClick(window._log_toggle_btn, Qt.MouseButton.LeftButton)
-        settings = QSettings("wiki-upload-tool", "wiki-upload-tool")
+        settings = QSettings(QSettings.Format.IniFormat, QSettings.Scope.UserScope, "wiki-upload-tool", "wiki-upload-tool")
         assert settings.value("main/log_visible") in (True, "true")
 
 

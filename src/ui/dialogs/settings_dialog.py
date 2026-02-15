@@ -48,7 +48,7 @@ class SettingsDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Settings")
         self.setMinimumWidth(520)
-        self._settings = QSettings("wiki-upload-tool", "wiki-upload-tool")
+        self._settings = QSettings(QSettings.Format.IniFormat, QSettings.Scope.UserScope, "wiki-upload-tool", "wiki-upload-tool")
 
         self._build_ui()
         self._load_from_settings()

@@ -275,7 +275,7 @@ class TagManagerDialog(QDialog):
         self._all_wiki_tags: list[str] | None = None  # cached wiki-wide tags
         self._worker: TagManagerWorker | None = None
         self._fetch_worker: _FetchPagesWorker | None = None
-        self._settings = QSettings("wiki-upload-tool", "wiki-upload-tool")
+        self._settings = QSettings(QSettings.Format.IniFormat, QSettings.Scope.UserScope, "wiki-upload-tool", "wiki-upload-tool")
 
         self._build_ui()
         self._restore_settings()

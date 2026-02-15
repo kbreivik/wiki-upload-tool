@@ -41,7 +41,7 @@ class TagEditor(QWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self._settings = QSettings("wiki-upload-tool", "wiki-upload-tool")
+        self._settings = QSettings(QSettings.Format.IniFormat, QSettings.Scope.UserScope, "wiki-upload-tool", "wiki-upload-tool")
         self._checkboxes: dict[str, QCheckBox] = {}
         self._wiki_tags: list[str] = []
         self._connected = False

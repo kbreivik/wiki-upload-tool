@@ -135,7 +135,7 @@ class ArchiveDialog(QDialog):
         self._pages: list[dict] = []
         self._fetch_worker: _FetchPagesWorker | None = None
         self._archive_worker: ArchiveWorker | None = None
-        self._settings = QSettings("wiki-upload-tool", "wiki-upload-tool")
+        self._settings = QSettings(QSettings.Format.IniFormat, QSettings.Scope.UserScope, "wiki-upload-tool", "wiki-upload-tool")
 
         self._build_ui()
         self._fetch_pages()

@@ -62,7 +62,7 @@ class MainWindow(QMainWindow):
         self._wiki_pages_cache: list[dict] | None = None
         self._last_upload_result: UploadResult | None = None
         self._last_upload_pages: list[dict] | None = None
-        self._settings = QSettings("wiki-upload-tool", "wiki-upload-tool")
+        self._settings = QSettings(QSettings.Format.IniFormat, QSettings.Scope.UserScope, "wiki-upload-tool", "wiki-upload-tool")
         self._auto_testing = False
         self._connected = False
 
