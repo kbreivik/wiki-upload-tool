@@ -356,7 +356,7 @@ def apply_tag_changes(
                 )
                 break
 
-        if sorted(op.current_tags) == sorted(op.new_tags):
+        if sorted(op.current_tags, key=str.lower) == sorted(op.new_tags, key=str.lower):
             result.skipped += 1
             continue
 

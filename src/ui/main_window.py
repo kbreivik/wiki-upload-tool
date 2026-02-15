@@ -400,7 +400,7 @@ class MainWindow(QMainWindow):
         tags = self._tag_editor.get_tags()
         if tags:
             lines.append("")
-            lines.append(f"Tags: {', '.join(tags)}")
+            lines.append(f"Tags: {', '.join(sorted(tags, key=str.lower))}")
 
         self._preview_edit.setPlainText("\n".join(lines))
 

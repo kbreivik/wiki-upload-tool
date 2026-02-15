@@ -311,7 +311,7 @@ class WikiClient:
         tags: set[str] = set()
         for p in pages:
             tags.update(p.get("tags", []))
-        return sorted(tags)
+        return sorted(tags, key=str.lower)
 
     def fetch_page_tags(self, page_id: int) -> list[str]:
         """Get tags for a specific page from the cached page list.

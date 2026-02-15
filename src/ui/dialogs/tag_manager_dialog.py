@@ -116,7 +116,7 @@ class _PageTagModel(QAbstractTableModel):
             if col == 0:
                 return page.get("title", page["path"])
             if col == 1:
-                return ", ".join(page.get("tags", []))
+                return ", ".join(sorted(page.get("tags", []), key=str.lower))
         elif role == Qt.ItemDataRole.CheckStateRole and col == 0:
             return Qt.CheckState.Checked if self._checked[row] else Qt.CheckState.Unchecked
         return None
@@ -150,18 +150,29 @@ class _PageTagModel(QAbstractTableModel):
 
 
 class _TagCheckboxSection(QWidget):
-    """Scrollable grid of tag checkboxes with custom add.
+    """Scrollable grid of tag checkboxes with optional custom add.
 
     Uses QGridLayout (fixed 4 columns) instead of FlowLayout to avoid
     the chicken-and-egg height-for-width bug where tags are hidden
     until the first resize event.
+
+    Args:
+        label: Section label (unused, kept for API compat).
+        style: Optional stylesheet for checkboxes.
+        show_custom_add: If False, hide the Custom: [input] [Add] row.
+        parent: Parent widget.
     """
 
     _COLUMNS = 4
     selection_changed = Signal()
 
     def __init__(
-        self, label: str, style: str = "", parent: QWidget | None = None,
+        self,
+        label: str,
+        style: str = "",
+        *,
+        show_custom_add: bool = True,
+        parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self._checkboxes: dict[str, QCheckBox] = {}
@@ -182,20 +193,24 @@ class _TagCheckboxSection(QWidget):
         self._scroll.setWidget(self._grid_container)
         root.addWidget(self._scroll)
 
-        # Custom add row
-        add_row = QHBoxLayout()
-        add_row.addWidget(QLabel("Custom:"))
-        self._custom_input = QLineEdit()
-        self._custom_input.setPlaceholderText("new tag...")
-        self._custom_input.setFixedWidth(140)
-        self._custom_input.returnPressed.connect(self._add_custom)
-        self._add_btn = QPushButton("Add")
-        self._add_btn.setFixedWidth(40)
-        self._add_btn.clicked.connect(self._add_custom)
-        add_row.addWidget(self._custom_input)
-        add_row.addWidget(self._add_btn)
-        add_row.addStretch()
-        root.addLayout(add_row)
+        # Custom add row (only shown for Add sections, not Remove)
+        if show_custom_add:
+            add_row = QHBoxLayout()
+            add_row.addWidget(QLabel("Custom:"))
+            self._custom_input = QLineEdit()
+            self._custom_input.setPlaceholderText("new tag...")
+            self._custom_input.setFixedWidth(140)
+            self._custom_input.returnPressed.connect(self._add_custom)
+            self._add_btn = QPushButton("Add")
+            self._add_btn.setFixedWidth(40)
+            self._add_btn.clicked.connect(self._add_custom)
+            add_row.addWidget(self._custom_input)
+            add_row.addWidget(self._add_btn)
+            add_row.addStretch()
+            root.addLayout(add_row)
+        else:
+            self._custom_input = None
+            self._add_btn = None
 
     def set_tags(self, tags: list[str]) -> None:
         """Replace all checkboxes with the given tags (all unchecked)."""
@@ -203,7 +218,7 @@ class _TagCheckboxSection(QWidget):
             cb.setParent(None)
             cb.deleteLater()
         self._checkboxes.clear()
-        for tag in sorted(tags):
+        for tag in sorted(tags, key=str.lower):
             self._add_checkbox(tag)
         # Force Qt to process layout before the dialog is shown
         QApplication.processEvents()
@@ -223,6 +238,8 @@ class _TagCheckboxSection(QWidget):
         self._grid_layout.addWidget(cb, count // self._COLUMNS, count % self._COLUMNS)
 
     def _add_custom(self) -> None:
+        if self._custom_input is None:
+            return
         tag = self._custom_input.text().strip()
         if not tag:
             return
@@ -323,6 +340,7 @@ class TagManagerDialog(QDialog):
         self._remove_section = _TagCheckboxSection(
             "Remove",
             style="QCheckBox { color: #c00; }",
+            show_custom_add=False,
         )
         self._remove_section.selection_changed.connect(self._update_preview)
         remove_layout.addWidget(self._remove_section)
@@ -485,9 +503,9 @@ class TagManagerDialog(QDialog):
             all_tags.update(page.get("tags", []))
         logger.debug(
             "_on_page_selection_changed: %d checked pages, remove_tags=%s",
-            len(checked), sorted(all_tags),
+            len(checked), sorted(all_tags, key=str.lower),
         )
-        self._remove_section.set_tags(sorted(all_tags))
+        self._remove_section.set_tags(sorted(all_tags, key=str.lower))
         QApplication.processEvents()
         self._remove_section.updateGeometry()
         self._update_preview()
@@ -504,8 +522,8 @@ class TagManagerDialog(QDialog):
             current = set(page.get("tags", []))
             new = (current | add_tags) - remove_tags
             if current != new:
-                current_str = ", ".join(sorted(current)) or "(none)"
-                new_str = ", ".join(sorted(new)) or "(none)"
+                current_str = ", ".join(sorted(current, key=str.lower)) or "(none)"
+                new_str = ", ".join(sorted(new, key=str.lower)) or "(none)"
                 title = page.get("title", page["path"])
                 lines.append(f"{title}:  {current_str}  \u2192  {new_str}")
 
@@ -522,8 +540,8 @@ class TagManagerDialog(QDialog):
         operations: list[TagOperation] = []
         for page in checked:
             current = page.get("tags", [])
-            new = sorted((set(current) | add_tags) - remove_tags)
-            if sorted(current) != new:
+            new = sorted((set(current) | add_tags) - remove_tags, key=str.lower)
+            if sorted(current, key=str.lower) != new:
                 operations.append(TagOperation(
                     page_id=page["id"],
                     page_path=page["path"],

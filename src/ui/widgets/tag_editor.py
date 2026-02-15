@@ -105,7 +105,7 @@ class TagEditor(QWidget):
 
     def set_wiki_tags(self, tags: list[str]) -> None:
         """Populate checkboxes from wiki tags. Called after fetch."""
-        self._wiki_tags = sorted(tags)
+        self._wiki_tags = sorted(tags, key=str.lower)
         self._connected = True
         self._rebuild_checkboxes()
 
@@ -148,7 +148,7 @@ class TagEditor(QWidget):
         for tag in self._saved_tags:
             if tag not in all_tags:
                 all_tags.append(tag)
-        all_tags.sort()
+        all_tags.sort(key=str.lower)
 
         for tag in all_tags:
             checked = tag in self._saved_tags
