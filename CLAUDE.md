@@ -107,7 +107,8 @@ wiki-upload-tool/
 - `uv run python src/main.py` — run the GUI app in dev mode
 - `uv run pytest tests/` — run all tests
 - `uv run pytest tests/ -x -v` — run tests, stop on first failure, verbose
-- `scripts/build_nuitka.bat` — build standalone exe with Nuitka
+- `scripts/build_nuitka.bat` — build standalone folder (default, best AV compat)
+- `scripts/build_nuitka.bat onefile` — build single exe (may trigger AV)
 - `uv run ruff check src/` — lint
 - `uv run ruff format src/` — format
 
@@ -130,12 +131,33 @@ wiki-upload-tool/
 - Always provide a pure-Python fallback so the app works without compiled extensions
 
 ## Nuitka Build Notes
-- Use `--standalone --onefile` for distribution
-- MUST use MSVC compiler (Visual Studio Build Tools) — not MinGW
+
+### Build modes
+- **Default (`scripts/build_nuitka.bat`)**: Standalone folder build — best AV compatibility. Output: `dist\standalone\main.dist\`. Distribute the entire folder.
+- **Onefile (`scripts/build_nuitka.bat onefile`)**: Single exe — convenient but self-extraction triggers heuristic AV detectors (Defender Wacatac, Fortinet). Not recommended for distribution.
+
+### AV hardening flags
+- `--msvc=latest` — explicitly compile with MSVC. Produces PE binaries with Rich Headers that AV vendors trust. MinGW binaries lack these and are flagged more often.
+- `--windows-console-mode=attach` — GUI runs clean but console is available when launched from terminal. Using `disable` is a major AV trigger because malware hides its console window.
+- `--file-description`, `--copyright`, `--company-name` — filled with real values. Nuitka defaults to placeholder text which correlates with unsigned malware in AV training data.
+- `--no-deployment-flag=self-execution` — suppresses Nuitka's self-execution deployment warning (standalone only).
+
+### Code signing
+The build script automatically attempts to sign the exe with `signtool` if available. For corporate distribution:
+1. **Azure Trusted Signing** (cheapest option ~$10/mo) or an **OV code certificate** from DigiCert/Sectigo
+2. Install Windows SDK for `signtool.exe`
+3. The script runs: `signtool sign /a /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 "<exe>"`
+4. If no cert is installed, signing is silently skipped
+
+### Pre-distribution checklist
+1. Scan with [VirusTotal](https://www.virustotal.com/) — expect 0-2 detections for unsigned standalone, more for onefile
+2. Submit false positives to [Microsoft WDSI](https://www.microsoft.com/en-us/wdsi/filesubmission)
+3. For Fortinet environments, add the SHA256 hash as an exemption on FortiGate
+
+### Other notes
 - Include `--enable-plugin=pyside6` for Qt support
 - Add `--include-data-dir=src/resources=resources` for assets
 - C extensions: use `--include-module=` for each native module
-- Nuitka native code triggers fewer AV alerts than PyInstaller — still sign exe for corporate environments
 - Nuitka must be installed in the venv, not globally — it needs access to the same packages
 - Install `.[build]` extras for zstandard (onefile compression) and ordered-set (build performance)
 
