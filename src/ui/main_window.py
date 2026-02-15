@@ -41,7 +41,7 @@ from src.ui.widgets.file_table import FileTableView
 from src.ui.widgets.log_viewer import LogHandler, LogViewer
 from src.ui.widgets.chip_editor import ChipEditor
 from src.ui.widgets.tag_editor import TagEditor
-from src.ui.workers import FetchTagsWorker, TestConnectionWorker, UploadWorker
+from src.ui.workers import FetchPagesWorker, FetchTagsWorker, TestConnectionWorker, UploadWorker
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +56,9 @@ class MainWindow(QMainWindow):
         self._test_worker: TestConnectionWorker | None = None
         self._health_worker: TestConnectionWorker | None = None
         self._tags_worker: FetchTagsWorker | None = None
+        self._pages_worker: FetchPagesWorker | None = None
         self._wiki_tags_cache: list[str] | None = None
+        self._wiki_pages_cache: list[dict] | None = None
         self._last_upload_result: UploadResult | None = None
         self._last_upload_pages: list[dict] | None = None
         self._settings = QSettings("wiki-upload-tool", "wiki-upload-tool")
@@ -70,7 +72,7 @@ class MainWindow(QMainWindow):
         # Debounce timer for live preview
         self._preview_timer = QTimer()
         self._preview_timer.setSingleShot(True)
-        self._preview_timer.setInterval(200)
+        self._preview_timer.setInterval(300)
         self._preview_timer.timeout.connect(self._update_preview)
 
         # Connection health monitor (60s periodic ping)
@@ -179,13 +181,16 @@ class MainWindow(QMainWindow):
         # Push everything up — empty space goes below tags
         center_layout.addStretch()
 
-        # Connect signals for preview debouncing
-        self._base_path.editingFinished.connect(self._schedule_preview)
+        # Connect signals for preview updates
+        # Text fields use textChanged → debounced preview (300ms)
+        self._base_path.textChanged.connect(self._schedule_preview)
+        self._index_file.textChanged.connect(self._schedule_preview)
+        # Instant triggers (combo, checkbox, tags)
         self._locale.currentTextChanged.connect(self._schedule_preview)
-        self._index_file.editingFinished.connect(self._schedule_preview)
         self._tag_editor.tags_changed.connect(self._schedule_preview)
+        self._update_existing.checkStateChanged.connect(self._schedule_preview)
 
-        # Also refresh file list on config changes
+        # Refresh file list when config changes that affect slug computation
         self._base_path.editingFinished.connect(self._refresh_file_list)
         self._locale.currentTextChanged.connect(self._refresh_file_list)
         self._index_file.editingFinished.connect(self._refresh_file_list)
@@ -196,7 +201,7 @@ class MainWindow(QMainWindow):
         self._preview_edit = QPlainTextEdit()
         self._preview_edit.setReadOnly(True)
         self._preview_edit.setPlaceholderText(
-            "Select source folder and files to see preview"
+            "Select a source folder to preview"
         )
         right_layout.addWidget(self._preview_edit)
 
@@ -396,37 +401,76 @@ class MainWindow(QMainWindow):
 
     # ── Live preview ───────────────────────────────────────────
 
-    def _schedule_preview(self) -> None:
-        """Restart the 200ms debounce timer for preview updates."""
-        self._preview_timer.start(200)
+    def _schedule_preview(self, *_args: object) -> None:
+        """Restart the 300ms debounce timer for preview updates."""
+        self._preview_timer.start(300)
 
     def _update_preview(self) -> None:
-        """Build preview text showing each checked file's computed wiki path."""
+        """Build preview showing each checked file's destination, status and tags."""
         source_dir = self._source_dir.text().strip()
+
+        # Empty states
+        if not source_dir:
+            self._preview_edit.setPlainText("")
+            return
+
+        all_files = self._file_table.file_model._files
+        if not all_files:
+            self._preview_edit.setPlainText("No markdown files found")
+            return
+
+        checked = self._file_table.file_model.get_checked_files()
+        if not checked:
+            self._preview_edit.setPlainText("No files selected")
+            return
+
         base_path = self._base_path.text().strip()
         locale = self._locale.currentText().strip()
         index_file = self._index_file.text().strip() or "README.md"
+        update_existing = self._update_existing.isChecked()
+        tags = self._tag_editor.get_tags()
+        tag_str = ", ".join(sorted(tags, key=str.lower)) if tags else ""
 
-        checked = self._file_table.file_model.get_checked_files()
-        if not checked or not source_dir:
-            self._preview_edit.clear()
-            return
+        # Build set of existing wiki paths for status lookup
+        existing_paths: set[str] = set()
+        if self._wiki_pages_cache is not None:
+            for page in self._wiki_pages_cache:
+                existing_paths.add(page.get("path", "").lower())
 
         lines: list[str] = []
         for f in checked:
             filename = f.get("filename", "")
             slug = f.get("slug", "")
             if slug:
-                path = f"/{locale}/{base_path}/{slug}"
+                wiki_path = f"{locale}/{base_path}/{slug}"
             else:
-                path = f"/{locale}/{base_path}"
-            lines.append(f"{filename}  \u2192  {path}")
+                wiki_path = f"{locale}/{base_path}"
 
-        # Show selected tags
-        tags = self._tag_editor.get_tags()
-        if tags:
-            lines.append("")
-            lines.append(f"Tags: {', '.join(sorted(tags, key=str.lower))}")
+            lines.append(filename)
+            lines.append(f"\u2192 {wiki_path}")
+
+            # Status based on page existence
+            if self._wiki_pages_cache is not None:
+                if wiki_path.lower() in existing_paths:
+                    if update_existing:
+                        lines.append("Status: EXISTS (will update)")
+                    else:
+                        lines.append("Status: EXISTS (will skip)")
+                else:
+                    lines.append("Status: NEW")
+            elif self._connected:
+                lines.append("Status: ...")
+            else:
+                lines.append("Connect to check page status")
+
+            if tag_str:
+                lines.append(f"Tags: {tag_str}")
+
+            lines.append("")  # blank line between entries
+
+        # Remove trailing blank line
+        if lines and lines[-1] == "":
+            lines.pop()
 
         self._preview_edit.setPlainText("\n".join(lines))
 
@@ -453,6 +497,29 @@ class MainWindow(QMainWindow):
     def _on_tags_fetch_failed(self, message: str) -> None:
         logger.warning("Failed to fetch wiki tags: %s", message)
 
+    # ── Page list fetch (for preview status) ──────────────────
+
+    def _fetch_wiki_pages(self) -> None:
+        """Fetch the wiki page list for preview existence checks."""
+        url = self._wiki_url.text().strip().rstrip("/")
+        key = self._api_key.text().strip()
+        if not url or not key:
+            return
+
+        client = WikiClient(url, key)
+        self._pages_worker = FetchPagesWorker(client)
+        self._pages_worker.pages_fetched.connect(self._on_pages_fetched)
+        self._pages_worker.failure.connect(self._on_pages_fetch_failed)
+        self._pages_worker.start()
+
+    def _on_pages_fetched(self, pages: list[dict]) -> None:
+        self._wiki_pages_cache = pages
+        logger.info("Loaded %d wiki pages for preview", len(pages))
+        self._update_preview()
+
+    def _on_pages_fetch_failed(self, message: str) -> None:
+        logger.warning("Failed to fetch wiki pages: %s", message)
+
     # ── Actions ────────────────────────────────────────────────
 
     def _on_browse_folder(self) -> None:
@@ -467,6 +534,7 @@ class MainWindow(QMainWindow):
         source_dir = self._source_dir.text().strip()
         if not source_dir or not Path(source_dir).is_dir():
             self._file_table.file_model.clear()
+            self._update_preview()
             return
 
         config = self._build_config()
@@ -475,11 +543,13 @@ class MainWindow(QMainWindow):
         except OSError as e:
             logger.error("Failed to scan directory: %s", e)
             self._file_table.file_model.clear()
+            self._update_preview()
             return
 
         if not files:
             self._file_table.file_model.clear()
             logger.info("No markdown files found in %s", source_dir)
+            self._update_preview()
             return
 
         # Build slug info for link map and display
@@ -514,6 +584,7 @@ class MainWindow(QMainWindow):
 
         self._file_table.file_model.set_files(file_infos)
         logger.info("Found %d markdown file(s)", len(file_infos))
+        self._update_preview()
 
     def _on_test_connection(self) -> None:
         url = self._wiki_url.text().strip().rstrip("/")
@@ -542,8 +613,9 @@ class MainWindow(QMainWindow):
         logger.info("Connection test passed")
         # Clear any error styling on API key field
         self._api_key.setStyleSheet("")
-        # Fetch wiki tags after successful connection
+        # Fetch wiki tags and page list after successful connection
         self._fetch_wiki_tags()
+        self._fetch_wiki_pages()
         # Start health monitoring
         self._health_timer.start()
 

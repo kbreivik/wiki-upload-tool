@@ -57,15 +57,12 @@ class TestThreePanelLayout:
 
 class TestPreview:
     def test_preview_updates_on_base_path_change(self, window, tmp_path):
-        # Create a markdown file
         md = tmp_path / "page1.md"
         md.write_text("# Page 1\nContent here\n", encoding="utf-8")
 
-        # Set source dir and trigger file list refresh
         window._source_dir.setText(str(tmp_path))
         window._refresh_file_list()
 
-        # Set base path and trigger preview
         window._base_path.setText("Docs/Project")
         window._update_preview()
 
@@ -74,7 +71,6 @@ class TestPreview:
         assert "Docs/Project" in text
 
     def test_preview_updates_on_file_check_change(self, window, tmp_path):
-        # Create two markdown files
         (tmp_path / "page1.md").write_text("# Page 1\n", encoding="utf-8")
         (tmp_path / "page2.md").write_text("# Page 2\n", encoding="utf-8")
 
@@ -82,7 +78,6 @@ class TestPreview:
         window._base_path.setText("Docs")
         window._refresh_file_list()
 
-        # Both files should be in preview initially
         window._update_preview()
         text = window._preview_edit.toPlainText()
         assert "page1.md" in text
@@ -95,8 +90,6 @@ class TestPreview:
 
         window._update_preview()
         text = window._preview_edit.toPlainText()
-        # One file should be gone
-        checked_files = model.get_checked_files()
         unchecked_filename = model._files[0]["filename"]
         assert unchecked_filename not in text
 
@@ -104,13 +97,19 @@ class TestPreview:
         window._update_preview()
         assert window._preview_edit.toPlainText() == ""
 
+    def test_preview_shows_no_files_message(self, window, tmp_path):
+        # Folder exists but has no .md files
+        window._source_dir.setText(str(tmp_path))
+        window._refresh_file_list()
+        text = window._preview_edit.toPlainText()
+        assert "No markdown files found" in text
+
     def test_preview_shows_tags(self, window, tmp_path):
         md = tmp_path / "page1.md"
         md.write_text("# Page 1\n", encoding="utf-8")
         window._source_dir.setText(str(tmp_path))
         window._refresh_file_list()
 
-        # Simulate tag selection
         window._tag_editor.set_wiki_tags(["docker", "linux"])
         window._tag_editor.set_tags(["docker"])
         window._update_preview()
@@ -118,6 +117,96 @@ class TestPreview:
         text = window._preview_edit.toPlainText()
         assert "Tags:" in text
         assert "docker" in text
+
+    def test_preview_shows_new_status_with_page_cache(self, window, tmp_path):
+        md = tmp_path / "page1.md"
+        md.write_text("# Page 1\n", encoding="utf-8")
+        window._source_dir.setText(str(tmp_path))
+        window._base_path.setText("Docs")
+        window._refresh_file_list()
+
+        # Simulate empty page cache (connected but no pages exist)
+        window._wiki_pages_cache = []
+        window._update_preview()
+
+        text = window._preview_edit.toPlainText()
+        assert "Status: NEW" in text
+
+    def test_preview_shows_exists_will_skip(self, window, tmp_path):
+        md = tmp_path / "page1.md"
+        md.write_text("# Page 1\n", encoding="utf-8")
+        window._source_dir.setText(str(tmp_path))
+        window._base_path.setText("Docs")
+        window._locale.setEditText("en")
+        window._refresh_file_list()
+
+        # Simulate cached page matching the computed path
+        window._wiki_pages_cache = [{"path": "en/Docs/page1", "title": "P1", "locale": "en", "tags": []}]
+        window._update_existing.setChecked(False)
+        window._update_preview()
+
+        text = window._preview_edit.toPlainText()
+        assert "EXISTS (will skip)" in text
+
+    def test_preview_shows_exists_will_update(self, window, tmp_path):
+        md = tmp_path / "page1.md"
+        md.write_text("# Page 1\n", encoding="utf-8")
+        window._source_dir.setText(str(tmp_path))
+        window._base_path.setText("Docs")
+        window._locale.setEditText("en")
+        window._refresh_file_list()
+
+        window._wiki_pages_cache = [{"path": "en/Docs/page1", "title": "P1", "locale": "en", "tags": []}]
+        window._update_existing.setChecked(True)
+        window._update_preview()
+
+        text = window._preview_edit.toPlainText()
+        assert "EXISTS (will update)" in text
+
+    def test_preview_shows_connect_message_when_not_connected(self, window, tmp_path):
+        md = tmp_path / "page1.md"
+        md.write_text("# Page 1\n", encoding="utf-8")
+        window._source_dir.setText(str(tmp_path))
+        window._refresh_file_list()
+
+        # No page cache and not connected
+        window._wiki_pages_cache = None
+        window._connected = False
+        window._update_preview()
+
+        text = window._preview_edit.toPlainText()
+        assert "Connect to check page status" in text
+
+    def test_preview_updates_on_locale_change(self, window, tmp_path):
+        md = tmp_path / "page1.md"
+        md.write_text("# Page 1\n", encoding="utf-8")
+        window._source_dir.setText(str(tmp_path))
+        window._base_path.setText("Docs")
+        window._refresh_file_list()
+
+        window._locale.setEditText("nb")
+        window._update_preview()
+
+        text = window._preview_edit.toPlainText()
+        assert "nb/Docs" in text
+
+    def test_preview_updates_on_update_existing_toggle(self, window, tmp_path):
+        md = tmp_path / "page1.md"
+        md.write_text("# Page 1\n", encoding="utf-8")
+        window._source_dir.setText(str(tmp_path))
+        window._base_path.setText("Docs")
+        window._locale.setEditText("en")
+        window._refresh_file_list()
+
+        window._wiki_pages_cache = [{"path": "en/Docs/page1", "title": "P1", "locale": "en", "tags": []}]
+
+        window._update_existing.setChecked(False)
+        window._update_preview()
+        assert "will skip" in window._preview_edit.toPlainText()
+
+        window._update_existing.setChecked(True)
+        window._update_preview()
+        assert "will update" in window._preview_edit.toPlainText()
 
 
 class TestLogToggle:

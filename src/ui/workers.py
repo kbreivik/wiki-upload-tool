@@ -160,6 +160,26 @@ class FetchTagsWorker(QThread):
             self.failure.emit(traceback.format_exc())
 
 
+class FetchPagesWorker(QThread):
+    """Background thread for fetching the wiki page list (for preview status)."""
+
+    pages_fetched = Signal(list)
+    failure = Signal(str)
+
+    def __init__(self, client: WikiClient, parent: object = None) -> None:
+        super().__init__(parent)
+        self._client = client
+
+    def run(self) -> None:
+        try:
+            pages = self._client.fetch_pages()
+            self.pages_fetched.emit(pages)
+        except WikiClientError as e:
+            self.failure.emit(str(e))
+        except Exception:
+            self.failure.emit(traceback.format_exc())
+
+
 class _PageMoveWorkerBase(QThread):
     """Base worker for archive and move operations.
 
