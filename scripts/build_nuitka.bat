@@ -20,10 +20,11 @@ if "%1"=="folder" (
     echo Building standalone folder...
     python -m nuitka %COMMON_OPTS% ^
         --output-dir=dist\folder ^
+        --output-filename=wiki-upload-tool.exe ^
         src/main.py
     echo.
     echo Build complete: dist\folder\main.dist\
-    echo Distribute the entire folder. Run main.exe inside it.
+    echo Distribute the entire folder. Run wiki-upload-tool.exe inside it.
 ) else (
     echo Building onefile...
     python -m nuitka %COMMON_OPTS% ^
