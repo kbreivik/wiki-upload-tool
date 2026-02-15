@@ -17,7 +17,10 @@ irm https://astral.sh/uv/install.ps1 | iex
 # Install Python 3.12 via uv
 uv python install 3.12
 
-# Create venv and install project + dev dependencies
+# From the project root (where pyproject.toml is):
+# -e = editable install (changes to src/ take effect without reinstalling)
+# .[dev] = install project + dev extras defined in pyproject.toml
+#          under [project.optional-dependencies] (pytest, ruff, pytest-qt)
 uv venv .venv
 .venv\Scripts\activate
 uv pip install -e ".[dev]"
