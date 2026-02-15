@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
+    QTextEdit,
     QProgressBar,
     QPushButton,
     QSplitter,
@@ -173,12 +174,10 @@ class MainWindow(QMainWindow):
         strip_row.addWidget(self._strip_editor, stretch=1)
         center_layout.addLayout(strip_row)
 
-        # Tags section
+        # Tags section (expands to fill remaining space)
         center_layout.addWidget(QLabel("Tags:"))
         self._tag_editor = TagEditor()
-        center_layout.addWidget(self._tag_editor)
-
-        # Push everything up — empty space goes below tags
+        center_layout.addWidget(self._tag_editor, stretch=1)
         center_layout.addStretch()
 
         # Connect signals for preview updates
@@ -198,7 +197,7 @@ class MainWindow(QMainWindow):
         # ── Right panel (Preview) ──────────────────────────────
         right_panel = QGroupBox("Preview")
         right_layout = QVBoxLayout(right_panel)
-        self._preview_edit = QPlainTextEdit()
+        self._preview_edit = QTextEdit()
         self._preview_edit.setReadOnly(True)
         self._preview_edit.setPlaceholderText(
             "Select a source folder to preview"
@@ -426,53 +425,71 @@ class MainWindow(QMainWindow):
 
         base_path = self._base_path.text().strip()
         locale = self._locale.currentText().strip()
-        index_file = self._index_file.text().strip() or "README.md"
         update_existing = self._update_existing.isChecked()
         tags = self._tag_editor.get_tags()
         tag_str = ", ".join(sorted(tags, key=str.lower)) if tags else ""
 
-        # Build set of existing wiki paths for status lookup
+        # Build set of existing wiki paths for status lookup.
+        # Wiki.js stores path WITHOUT locale prefix (e.g. "Docs/page1")
+        # and locale as a separate field. We match on path + locale.
         existing_paths: set[str] = set()
         if self._wiki_pages_cache is not None:
             for page in self._wiki_pages_cache:
-                existing_paths.add(page.get("path", "").lower())
+                page_locale = page.get("locale", "").lower()
+                page_path = page.get("path", "").lower()
+                existing_paths.add(f"{page_locale}/{page_path}")
+            if not self._wiki_pages_cache:
+                logger.debug("Page cache is empty — all pages will show as NEW")
+            else:
+                logger.debug(
+                    "Page cache: %d pages, sample paths: %s",
+                    len(self._wiki_pages_cache),
+                    [p.get("path", "") for p in self._wiki_pages_cache[:5]],
+                )
 
-        lines: list[str] = []
+        html_parts: list[str] = []
         for f in checked:
             filename = f.get("filename", "")
             slug = f.get("slug", "")
-            if slug:
-                wiki_path = f"{locale}/{base_path}/{slug}"
-            else:
-                wiki_path = f"{locale}/{base_path}"
+            # page_path = path without locale (matches Wiki.js format)
+            page_path = f"{base_path}/{slug}" if slug else base_path
+            # display_path = full path with locale (shown to user)
+            display_path = f"{locale}/{page_path}"
+            # lookup_key = locale/path for matching against cache
+            lookup_key = f"{locale}/{page_path}".lower()
 
-            lines.append(filename)
-            lines.append(f"\u2192 {wiki_path}")
+            html_parts.append(f"<b>{filename}</b><br>")
+            html_parts.append(f"\u2192 {display_path}<br>")
 
             # Status based on page existence
             if self._wiki_pages_cache is not None:
-                if wiki_path.lower() in existing_paths:
+                if lookup_key in existing_paths:
                     if update_existing:
-                        lines.append("Status: EXISTS (will update)")
+                        html_parts.append(
+                            '<span style="color: #d4a017;">Status: EXISTS (will update)</span><br>'
+                        )
                     else:
-                        lines.append("Status: EXISTS (will skip)")
+                        html_parts.append(
+                            '<span style="color: #888;">Status: EXISTS (will skip)</span><br>'
+                        )
                 else:
-                    lines.append("Status: NEW")
+                    html_parts.append(
+                        '<span style="color: #2e8b57;">Status: NEW</span><br>'
+                    )
             elif self._connected:
-                lines.append("Status: ...")
+                html_parts.append("Status: ...<br>")
             else:
-                lines.append("Connect to check page status")
+                html_parts.append(
+                    '<span style="color: #888; font-style: italic;">'
+                    "Connect to check page status</span><br>"
+                )
 
             if tag_str:
-                lines.append(f"Tags: {tag_str}")
+                html_parts.append(f"Tags: {tag_str}<br>")
 
-            lines.append("")  # blank line between entries
+            html_parts.append("<br>")  # blank line between entries
 
-        # Remove trailing blank line
-        if lines and lines[-1] == "":
-            lines.pop()
-
-        self._preview_edit.setPlainText("\n".join(lines))
+        self._preview_edit.setHtml("".join(html_parts))
 
     # ── Tag loading ────────────────────────────────────────────
 

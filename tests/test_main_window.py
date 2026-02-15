@@ -140,8 +140,8 @@ class TestPreview:
         window._locale.setEditText("en")
         window._refresh_file_list()
 
-        # Simulate cached page matching the computed path
-        window._wiki_pages_cache = [{"path": "en/Docs/page1", "title": "P1", "locale": "en", "tags": []}]
+        # Wiki.js stores path WITHOUT locale prefix, locale is a separate field
+        window._wiki_pages_cache = [{"path": "Docs/page1", "title": "P1", "locale": "en", "tags": []}]
         window._update_existing.setChecked(False)
         window._update_preview()
 
@@ -156,7 +156,7 @@ class TestPreview:
         window._locale.setEditText("en")
         window._refresh_file_list()
 
-        window._wiki_pages_cache = [{"path": "en/Docs/page1", "title": "P1", "locale": "en", "tags": []}]
+        window._wiki_pages_cache = [{"path": "Docs/page1", "title": "P1", "locale": "en", "tags": []}]
         window._update_existing.setChecked(True)
         window._update_preview()
 
@@ -198,7 +198,7 @@ class TestPreview:
         window._locale.setEditText("en")
         window._refresh_file_list()
 
-        window._wiki_pages_cache = [{"path": "en/Docs/page1", "title": "P1", "locale": "en", "tags": []}]
+        window._wiki_pages_cache = [{"path": "Docs/page1", "title": "P1", "locale": "en", "tags": []}]
 
         window._update_existing.setChecked(False)
         window._update_preview()

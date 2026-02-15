@@ -67,10 +67,9 @@ class TagEditor(QWidget):
         # Scrollable checkbox area using QGridLayout
         self._scroll = QScrollArea()
         self._scroll.setWidgetResizable(True)
-        self._scroll.setMaximumHeight(120)
-        self._scroll.setMinimumHeight(24)
+        self._scroll.setMinimumHeight(80)
         self._scroll.setSizePolicy(
-            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding
         )
 
         self._grid_container = QWidget()
