@@ -278,7 +278,7 @@ class TagManagerDialog(QDialog):
         self._pick_btn.clicked.connect(self._on_pick_path)
         path_row.addWidget(self._pick_btn)
 
-        self._load_btn = QPushButton("Load")
+        self._load_btn = QPushButton("Refresh")
         self._load_btn.setFixedWidth(60)
         self._load_btn.clicked.connect(self._on_load)
         path_row.addWidget(self._load_btn)
@@ -311,17 +311,12 @@ class TagManagerDialog(QDialog):
         self._model.modelReset.connect(self._on_page_selection_changed)
 
         # ── Center panel (Tag Actions) ───────────────────────
-        center = QWidget()
-        center_layout = QVBoxLayout(center)
-        center_layout.setContentsMargins(0, 0, 0, 0)
-
         add_group = QGroupBox("Add tags:")
         add_layout = QVBoxLayout(add_group)
         self._add_section = _TagCheckboxSection("Add")
         self._add_section.set_tags([])
         self._add_section.selection_changed.connect(self._update_preview)
         add_layout.addWidget(self._add_section)
-        center_layout.addWidget(add_group)
 
         remove_group = QGroupBox("Remove tags (from selected pages):")
         remove_layout = QVBoxLayout(remove_group)
@@ -331,9 +326,12 @@ class TagManagerDialog(QDialog):
         )
         self._remove_section.selection_changed.connect(self._update_preview)
         remove_layout.addWidget(self._remove_section)
-        center_layout.addWidget(remove_group)
 
-        center_layout.addStretch()
+        center = QSplitter(Qt.Orientation.Vertical)
+        center.addWidget(add_group)
+        center.addWidget(remove_group)
+        center.setStretchFactor(0, 1)
+        center.setStretchFactor(1, 1)
 
         # ── Right panel (Preview) ────────────────────────────
         preview_group = QGroupBox("Preview:")
@@ -413,6 +411,7 @@ class TagManagerDialog(QDialog):
             path = dialog.selected_path()
             if path:
                 self._path_input.setText(path)
+                self._on_load()
 
     # ── Load pages ──────────────────────────────────────────────
 
@@ -598,6 +597,10 @@ class TagManagerDialog(QDialog):
                 self, "Tag Update Complete",
                 f"Updated: {result.updated}, Skipped: {result.skipped}",
             )
+
+        # Refresh page list to show updated tags
+        if result.updated > 0:
+            self._on_load()
 
     def _on_worker_error(self, message: str) -> None:
         self._progress_bar.setVisible(False)
